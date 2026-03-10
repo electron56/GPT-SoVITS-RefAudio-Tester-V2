@@ -1,80 +1,86 @@
-<div class="title" align=center>
-    <h1>GPT-SoVITS RefAudio Tester</h1>
-	<div>GPT-SoVITS 参考音频推理效果批量试听</div>
-    <br/>
-    <p>
-        <img src="https://img.shields.io/github/license/2DIPW/GPT-SoVITS-RefAudio-Tester">
-    	<img src="https://img.shields.io/badge/python-3.9-blue">
-        <img src="https://img.shields.io/github/stars/2DIPW/GPT-SoVITS-RefAudio-Tester?style=social">
-        
-</div>
+﻿# GPT-SoVITS RefAudio Tester (v1-v4 Compatible)
 
-## 🚩 简介
-本项目是一个拥有 WebUI 的 GPT-SoVITS 批量推理器，旨在快速试听多个候选参考音频的推理效果，以筛选出其中效果最令人满意的参考音频。
+This repository keeps a batch preview WebUI workflow for reference-audio testing, and now uses the latest GPT-SoVITS inference core (`TTS_infer_pack`) for model compatibility.
 
-推理部分的源码基于 [RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 修改，Gradio 部分的源码参考了 [cronrpc/SubFix](https://github.com/cronrpc/SubFix) 的写法。
+## What is upgraded
 
-## 📥 部署
-### 克隆
-```shell
-git clone https://github.com/2DIPW/GPT-SoVITS-RefAudio-Tester.git
-cd GPT-SoVITS-RefAudio-Tester
+- Inference core migrated from legacy direct model calls to the upstream `TTS` pipeline.
+- Compatible with SoVITS/GPT model families:
+  - `v1`
+  - `v2`
+  - `v2Pro`
+  - `v2ProPlus`
+  - `v3`
+  - `v4`
+- Batch preview flow is preserved:
+  - paged list loading
+  - generate preview audio for a batch
+  - one-click save approved references
+
+## Model directories
+
+Put your weights in any of the following directories:
+
+- SoVITS (`.pth`)
+  - `SoVITS_weights`
+  - `SoVITS_weights_v2`
+  - `SoVITS_weights_v2Pro`
+  - `SoVITS_weights_v2ProPlus`
+  - `SoVITS_weights_v3`
+  - `SoVITS_weights_v4`
+- GPT (`.ckpt`)
+  - `GPT_weights`
+  - `GPT_weights_v2`
+  - `GPT_weights_v2Pro`
+  - `GPT_weights_v2ProPlus`
+  - `GPT_weights_v3`
+  - `GPT_weights_v4`
+
+## Runtime dependencies
+
+Use the synced upstream dependency files:
+
+- `requirements.txt`
+- `extra-req.txt` (optional)
+
+Note: this project assumes GPT-SoVITS related pretrained assets (for example BERT/CN-HuBERT) are available under `GPT_SoVITS/pretrained_models`.
+
+## Run
+
+```powershell
+python webui.py -l ref.list -f <ref_audio_folder> -b 10
 ```
-### 安装依赖
-本项目相比 [RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 而言没有引入更多的依赖，可以直接使用为其配置的环境。
 
-### 配置预训练模型
-与 [RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 中相同，需要将预训练模型放置于 `GPT_SoVITS/pretrained_models` 目录。
-## 🗝 使用方法
-### 准备自己训练的 GPT 和 SoVITS 模型
-- 将自己训练的 GPT 模型放入 `GPT_weights` 目录
+Arguments:
 
-- 将自己训练的 SoVITS 模型放入 `SoVITS_weights` 目录
-### 准备参考音频及参考音频注释列表文件
-- 参考音频注释列表 .list 文件格式与 [RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 中相同：
+- `-l`, `--list`: reference list file (default: `ref.list`)
+- `-p`, `--port`: WebUI port (default: `14285`)
+- `-f`, `--folder`: optional base folder for reference audios in list file
+- `-b`, `--batch`: page batch size
+- `-cd`, `--check_duration`: filter refs outside 3-10 seconds
+- `-r`, `--random_order`: randomize reference list order
 
-    ```
-    参考音频文件名或绝对路径|说话人|语言|参考文本
-    ```
-- 其中说话人虽然在本项目中无用，但为了与其他项目生成的 list 文件兼容，仍将其保留，可以随意填写。
+Reference list format:
 
-- 语言字典：
+```text
+<wav_path_or_name>|<speaker>|<language>|<prompt_text>
+```
 
-  - "ZH": "中文"
-  - "zh": "中文"
-  - "JP": "日文"
-  - "jp": "日文"
-  - "JA": "日文"
-  - "ja": "日文"
-  - "EN": "英文"
-  - "en": "英文"
-  - "En": "英文"
+Legacy language values in list files such as `ZH/JP/EN` are automatically normalized.
 
-- 示例：
-    ```
-    ATR_b102_006.wav|アトリ|jp|へっちゃらです。高性能ですから
-    ```
-    ```
-    D:\xxx\ATR_b102_006.wav|アトリ|jp|へっちゃらです。高性能ですから
-    ```
-### 运行
-- 使用`webui.py`
-    ```shell
-    python webui.py -l 参考音频注释列表文件 -f 参考音频所在目录 -b 10
-    ```
-    可指定的参数:
-    - `-l` | `--list`: 参考音频注释列表文件的位置。默认值：`ref.list`
-    - `-p` | `--port`: WebUI的监听端口。默认值：14285
-    - `-f` | `--folder`: 参考音频所在目录。**如果参考音频注释列表中第一列内容仅为文件名，或虽为绝对路径，但是音频文件已移动至其他位置，则需要指定该参数。程序会将指定的目录与文件名拼接，作为最终的参考音频文件路径。** 默认值：None
-    - `-b` | `--batch`: 每一批最多处理多少个音频。因 Gradio 不支持动态增减控件数量，此值需要预先指定以生成控件，且在运行过程中无法修改。默认值：10
-    - `-cd` | `--check_duration`：是否检查音频时长。启用此选项后，在启动时会检查每条音频时长是否在 3~10s 的范围内，若不在则不会加载。若准备的参考音频中均无时长超过范围的，可不开启此项，以缩短启动时间。默认值：不启用
-    - `-r` | `--random_order`：是否乱序参考音频列表。启用此选项后，将会把从文件中读取的参考音频列表打乱顺序。默认值：不启用
-- 在`试听文本`中填入用来测试推理效果的文本，点击`合成试听语音`，即可为当前批次的参考音频生成对应的试听音频。
-- 在`满意的参考音频复制到`中设置目的目录，在点击音频旁的`满意`按钮后，该条参考音频将以`{参考文本}.wav`的文件名复制到该目录。
+## New synthesis controls in WebUI
 
-## ⚖ 开源声明
-本项目基于 [RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 修改，并以 [GNU General Public License v3.0](https://github.com/2DIPW/GPT-SoVITS-RefAudio-Tester/blob/master/LICENSE) 开源
+- `top_k`
+- `top_p`
+- `temperature`
+- `speed_factor`
+- `repetition_penalty`
+- `seed`
+- `sample_steps` (visible for `v3`)
+- `super_sampling` (visible for `v3`)
 
-本项目基于 LGPL 2.1 协议包含一份 FFmpeg 的可执行文件
+## Notes
 
-*世界因开源更精彩*
+- For `v3/v4` models, empty prompt text may fail for that row.
+- If one row fails in a batch, other rows continue.
+- The WebUI dynamically updates synthesis language choices according to loaded SoVITS version.

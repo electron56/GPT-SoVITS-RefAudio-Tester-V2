@@ -1,430 +1,633 @@
-from GPT_SoVITS import inference_main
-import gradio as gr
-import argparse
-import os
-import re
+﻿import argparse
 import csv
+import logging
+import os
+import random
+import re
 import shutil
+from typing import Dict, List, Optional
+
+import gradio as gr
 import librosa
 from tqdm import tqdm
-import random
-import logging
+
+from GPT_SoVITS import inference_main
 
 logging.getLogger("PIL.Image").propagate = False
 
-language_v1_to_language_v2 = {
-    "ZH": "中文",
-    "zh": "中文",
-    "JP": "日文",
-    "jp": "日文",
-    "JA": "日文",
-    "ja": "日文",
-    "EN": "英文",
-    "en": "英文",
-    "En": "英文",
-}
-dict_language = {
-    "中文": "all_zh",  # 全部按中文识别
-    "英文": "en",  # 全部按英文识别#######不变
-    "日文": "all_ja",  # 全部按日文识别
-    "中英混合": "zh",  # 按中英混合识别####不变
-    "日英混合": "ja",  # 按日英混合识别####不变
-    "多语种混合": "auto",  # 多语种启动切分识别语种
-}
-dict_how_to_cut = {
-    "不切": 0,
-    "凑四句一切": 1,
-    "凑50字一切": 2,
-    "按中文句号。切": 3,
-    "按英文句号.切": 4,
-    "按标点符号切": 5
+SOVITS_WEIGHT_ROOTS = [
+    "SoVITS_weights",
+    "SoVITS_weights_v2",
+    "SoVITS_weights_v3",
+    "SoVITS_weights_v4",
+    "SoVITS_weights_v2Pro",
+    "SoVITS_weights_v2ProPlus",
+]
+
+GPT_WEIGHT_ROOTS = [
+    "GPT_weights",
+    "GPT_weights_v2",
+    "GPT_weights_v3",
+    "GPT_weights_v4",
+    "GPT_weights_v2Pro",
+    "GPT_weights_v2ProPlus",
+]
+
+CUT_LABEL_TO_VALUE = {
+    "No Cut": 0,
+    "Every 4 Sentences": 1,
+    "Every 50 Characters": 2,
+    "By Chinese Full Stop": 3,
+    "By English Full Stop": 4,
+    "By Punctuation": 5,
 }
 
+LEGACY_REF_LANGUAGE_ALIASES = {
+    "ZH": "Chinese",
+    "zh": "Chinese",
+    "JP": "Japanese",
+    "jp": "Japanese",
+    "JA": "Japanese",
+    "ja": "Japanese",
+    "EN": "English",
+    "en": "English",
+    "En": "English",
+    "YUE": "Cantonese",
+    "yue": "Cantonese",
+    "KO": "Korean",
+    "ko": "Korean",
+}
 
-def check_audio_duration(path):
+# Runtime state
+SoVITS_weight_root = "SoVITS_weights"
+GPT_weight_root = "GPT_weights"
+g_ref_folder = ""
+g_batch = 10
+g_index = 0
+g_ref_list: List[Dict[str, str]] = []
+g_ref_list_max_index = 0
+g_ref_audio_path_list: List[Optional[str]] = []
+g_SoVITS_names: List[str] = []
+g_GPT_names: List[str] = []
+
+
+def custom_sort_key(value: str):
+    parts = re.split(r"(\d+)", value)
+    return [int(part) if part.isdigit() else part for part in parts]
+
+
+def check_audio_duration(path: str) -> bool:
     try:
-        wav16k, sr = librosa.load(path, sr=16000)
-        if wav16k.shape[0] > 160000 or wav16k.shape[0] < 48000:
-            return False
-        else:
-            return True
-    except Exception as e:
-        print(f"Error when checking audio {path}: {e}")
+        wav16k, _ = librosa.load(path, sr=16000)
+        return 48000 <= wav16k.shape[0] <= 160000
+    except Exception as exc:
+        print(f"Error when checking audio {path}: {exc}")
         return False
 
 
-def remove_noncompliant_audio_from_list():  # 从参考音频文件列表中清除长度不符合要求的音频
+def remove_noncompliant_audio_from_list() -> None:
+    global g_ref_list, g_ref_list_max_index
     print("Checking audio duration ...")
+    filtered = []
+    for item in tqdm(g_ref_list):
+        if check_audio_duration(item["path"]):
+            filtered.append(item)
+    g_ref_list = filtered
+    g_ref_list_max_index = max(len(g_ref_list) - 1, 0)
+
+
+def load_ref_list_file(path: str) -> None:
     global g_ref_list, g_ref_list_max_index
-    new_ref_list = []
-    for line in tqdm(g_ref_list):
-        if check_audio_duration(line[0]):
-           new_ref_list.append(line)
-    g_ref_list = new_ref_list
-    g_ref_list_max_index = len(g_ref_list) - 1
+    records: List[Dict[str, str]] = []
 
+    with open(path, "r", encoding="utf-8") as handle:
+        reader = csv.reader(handle, delimiter="|")
+        for row in reader:
+            if not row:
+                continue
+            if len(row) < 4:
+                row = row + [""] * (4 - len(row))
+            audio_path = row[0].strip()
+            if g_ref_folder:
+                audio_path = os.path.join(g_ref_folder, os.path.basename(audio_path))
 
-def load_ref_list_file(path):  # 加载参考音频列表文件
-    global g_ref_list, g_ref_list_max_index
-    with open(path, 'r', encoding="utf-8") as f:
-        reader = csv.reader(f, delimiter='|')
-        g_ref_list = list(reader)
-        if g_ref_folder:  # 如果指定了参考文件目录参数，则拼接文件名
-            for _ in g_ref_list:
-                if _:
-                    _[0] = os.path.join(g_ref_folder, os.path.basename(_[0]))
-        g_ref_list_max_index = len(g_ref_list) - 1
-
-
-def get_weights_names():  # 获取模型列表
-    SoVITS_names = []
-    for name in os.listdir(SoVITS_weight_root):
-        if name.endswith(".pth"): SoVITS_names.append("%s/%s" % (SoVITS_weight_root, name))
-    GPT_names = []
-    for name in os.listdir(GPT_weight_root):
-        if name.endswith(".ckpt"): GPT_names.append("%s/%s" % (GPT_weight_root, name))
-    return sorted(SoVITS_names, key=custom_sort_key), sorted(GPT_names, key=custom_sort_key)
-
-
-def custom_sort_key(s):
-    # 使用正则表达式提取字符串中的数字部分和非数字部分
-    parts = re.split('(\d+)', s)
-    # 将数字部分转换为整数，非数字部分保持不变
-    parts = [int(part) if part.isdigit() else part for part in parts]
-    return parts
-
-
-def refresh_model_list():  # 刷新模型列表
-    SoVITS_names, GPT_names = get_weights_names()
-    return {"choices": SoVITS_names, "__type__": "update"}, {
-        "choices": GPT_names, "__type__": "update"}
-
-
-def reload_data(index, batch):  # 从index起始，由文件列表中加载一批数据
-    global g_index
-    g_index = index
-    global g_batch
-    g_batch = batch
-    datas = g_ref_list[index:index + batch]
-    output = []
-    for d in datas:
-        try:
-            output.append(
+            records.append(
                 {
-                    "path": d[0],
-                    "lang": d[2],
-                    "text": d[3]
+                    "path": audio_path,
+                    "lang": row[2].strip(),
+                    "text": row[3].strip(),
                 }
             )
-        except IndexError:
-            pass
-    return output
+
+    g_ref_list = records
+    g_ref_list_max_index = max(len(g_ref_list) - 1, 0)
 
 
-def change_index(index, batch):  # 起始索引更改后，将新的一批数据填充进表格
+def get_weights_names():
+    sovits_names: List[str] = []
+    for root in SOVITS_WEIGHT_ROOTS:
+        os.makedirs(root, exist_ok=True)
+        for name in os.listdir(root):
+            if name.lower().endswith(".pth"):
+                sovits_names.append(f"{root}/{name}")
+
+    gpt_names: List[str] = []
+    for root in GPT_WEIGHT_ROOTS:
+        os.makedirs(root, exist_ok=True)
+        for name in os.listdir(root):
+            if name.lower().endswith(".ckpt"):
+                gpt_names.append(f"{root}/{name}")
+
+    return sorted(sovits_names, key=custom_sort_key), sorted(gpt_names, key=custom_sort_key)
+
+
+def refresh_model_list():
+    global g_SoVITS_names, g_GPT_names
+    g_SoVITS_names, g_GPT_names = get_weights_names()
+
+    status = (
+        f"Refreshed. SoVITS: {len(g_SoVITS_names)} | GPT: {len(g_GPT_names)}"
+    )
+    return (
+        {"choices": g_SoVITS_names, "__type__": "update"},
+        {"choices": g_GPT_names, "__type__": "update"},
+        status,
+    )
+
+
+def _normalize_ref_language(raw_language: Optional[str]) -> str:
+    if raw_language is None:
+        return inference_main.get_default_language()
+
+    lang = str(raw_language).strip()
+    if lang in inference_main.get_supported_languages():
+        return lang
+
+    if lang in LEGACY_REF_LANGUAGE_ALIASES:
+        candidate = LEGACY_REF_LANGUAGE_ALIASES[lang]
+        if candidate in inference_main.get_supported_languages():
+            return candidate
+
+    return inference_main.normalize_ref_language(lang)
+
+
+def reload_data(index: int, batch: int):
+    global g_index, g_batch
+    g_index = index
+    g_batch = batch
+    return g_ref_list[index:index + batch]
+
+
+def change_index(index: int, batch: int):
     global g_index, g_batch, g_ref_audio_path_list
+
     g_ref_audio_path_list = []
     g_index, g_batch = index, batch
     datas = reload_data(index, batch)
+
     output = []
-    # 参考音频
-    for i, _ in enumerate(datas):
+
+    # Reference audio widgets
+    for item in datas:
         output.append(
             {
                 "__type__": "update",
-                "label": f"参考音频 {os.path.basename(_['path'])}",
-                "value": _["path"]
+                "label": f"Ref Audio {os.path.basename(item['path'])}",
+                "value": item["path"],
             }
         )
-        g_ref_audio_path_list.append(_['path'])
+        g_ref_audio_path_list.append(item["path"])
+
     for _ in range(g_batch - len(datas)):
         output.append(
             {
                 "__type__": "update",
-                "label": "参考音频",
-                "value": None
+                "label": "Ref Audio",
+                "value": None,
             }
         )
         g_ref_audio_path_list.append(None)
-    # 参考音频语言
-    for _ in datas:
-        output.append(_["lang"])
+
+    # Reference language widgets
+    for item in datas:
+        output.append(_normalize_ref_language(item["lang"]))
     for _ in range(g_batch - len(datas)):
         output.append(None)
-    # 参考文本
-    for _ in datas:
-        output.append(_["text"])
+
+    # Reference text widgets
+    for item in datas:
+        output.append(item["text"])
     for _ in range(g_batch - len(datas)):
         output.append(None)
-    # 试听音频
+
+    # Test audio widgets
     for _ in range(g_batch):
         output.append(None)
-    # 满意按钮
+
+    # Save buttons
     for _ in datas:
-        output.append(
-            {
-                "__type__": "update",
-                "value": "满意",
-                "interactive": True
-            }
-        )
+        output.append({"__type__": "update", "value": "Save", "interactive": True})
     for _ in range(g_batch - len(datas)):
-        output.append(
-            {
-                "__type__": "update",
-                "value": "满意",
-                "interactive": False
-            }
-        )
+        output.append({"__type__": "update", "value": "Save", "interactive": False})
 
     return output
 
 
-def previous_index(index, batch):  # 上一批数据
+def previous_index(index: int, batch: int):
     if (index - batch) >= 0:
-        return index - batch, *change_index(index - batch, batch)
+        new_index = index - batch
     else:
-        return 0, *change_index(0, batch)
+        new_index = 0
+    return new_index, *change_index(new_index, batch)
 
 
-def next_index(index, batch):  # 下一批数据
+def next_index(index: int, batch: int):
     if (index + batch) <= g_ref_list_max_index:
-        return index + batch, *change_index(index + batch, batch)
+        new_index = index + batch
     else:
-        return index, *change_index(index, batch)
+        new_index = index
+    return new_index, *change_index(new_index, batch)
 
 
-def copy_proved_ref_audio(index, text, out_dir):  # 满意按钮点击
+def copy_proved_ref_audio(index: int, text: str, out_dir: str):
     os.makedirs(out_dir, exist_ok=True)
-    filename = re.sub(r'[/\\:*?\"<>|]', '', text)  # 删除不能出现在文件名中的字符
+    filename = re.sub(r"[/\\:*?\"<>|]", "", text or "untitled")
+    if not filename:
+        filename = "untitled"
+
     try:
-        shutil.copy2(g_ref_audio_path_list[int(index)], os.path.join(out_dir, filename+".wav"))
-        return {
-                    "__type__": "update",
-                    "value": "已复制!",
-                    "interactive": False
-                }
-    except Exception as e:
-        print(e)
-        return {
-            "__type__": "update",
-            "value": "复制失败",
-            "interactive": True
-        }
+        source = g_ref_audio_path_list[int(index)]
+        if not source:
+            raise FileNotFoundError("Reference audio path is empty.")
+        shutil.copy2(source, os.path.join(out_dir, f"{filename}.wav"))
+        return {"__type__": "update", "value": "Saved", "interactive": False}
+    except Exception as exc:
+        print(exc)
+        return {"__type__": "update", "value": "Save Failed", "interactive": True}
 
 
-def generate_test_audio(test_text, language, how_to_cut, top_k, top_p, temp, *widgets):  # 生成试听音频
+def _build_language_update(current_text_language: Optional[str]):
+    languages = inference_main.get_supported_languages()
+    if not languages:
+        return {"__type__": "update", "choices": [], "value": None}
+
+    value = current_text_language if current_text_language in languages else languages[0]
+    return {"__type__": "update", "choices": languages, "value": value}
+
+
+def _build_version_updates(version: str):
+    is_v3 = version == "v3"
+    sample_value = 32 if is_v3 else 8
+
+    sample_steps_update = {
+        "__type__": "update",
+        "visible": is_v3,
+        "interactive": is_v3,
+        "value": sample_value,
+    }
+
+    super_sampling_update = {
+        "__type__": "update",
+        "visible": is_v3,
+        "interactive": is_v3,
+        "value": False,
+    }
+
+    return (
+        f"SoVITS Version: {version}",
+        sample_steps_update,
+        super_sampling_update,
+    )
+
+
+def on_change_sovits_weights(sovits_path: str, current_text_language: str):
+    try:
+        version = inference_main.change_sovits_weights(sovits_path)
+        language_update = _build_language_update(current_text_language)
+        version_text, sample_steps_update, super_sampling_update = _build_version_updates(version)
+        status = f"Loaded SoVITS: {os.path.basename(sovits_path)}"
+        return (
+            language_update,
+            version_text,
+            sample_steps_update,
+            super_sampling_update,
+            status,
+        )
+    except Exception as exc:
+        print(exc)
+        version = inference_main.get_current_model_version()
+        language_update = _build_language_update(current_text_language)
+        version_text, sample_steps_update, super_sampling_update = _build_version_updates(version)
+        return (
+            language_update,
+            version_text,
+            sample_steps_update,
+            super_sampling_update,
+            f"Failed to load SoVITS: {exc}",
+        )
+
+
+def on_change_gpt_weights(gpt_path: str):
+    try:
+        inference_main.change_gpt_weights(gpt_path)
+        return f"Loaded GPT: {os.path.basename(gpt_path)}"
+    except Exception as exc:
+        print(exc)
+        return f"Failed to load GPT: {exc}"
+
+
+def generate_test_audio(
+    test_text: str,
+    text_language: str,
+    how_to_cut: str,
+    top_k: float,
+    top_p: float,
+    temperature: float,
+    speed_factor: float,
+    repetition_penalty: float,
+    seed: float,
+    sample_steps: float,
+    super_sampling: bool,
+    *widgets,
+):
     output = []
-    for _ in range(g_batch):
-        r_audio = g_ref_audio_path_list[_]
-        if r_audio:
-            try:
-                r_lang = dict_language[language_v1_to_language_v2[widgets[_]]]
-                r_text = widgets[_ + g_batch]
-                gen_audio = inference_main.get_tts_wav(r_audio, r_text, r_lang, test_text, dict_language[language], dict_how_to_cut[how_to_cut],
-                                                       top_k, top_p, temp)
-                sample_rate, array = next(gen_audio)
-                output.append((sample_rate, array))
-            except OSError:  # 若音频长度不符合要求
-                print(f"Duration of {r_audio} is not compliant, skip")
-                output.append(None)
-        else:
+
+    if not test_text or not test_text.strip():
+        return [None for _ in range(g_batch)]
+
+    cut_mode = CUT_LABEL_TO_VALUE.get(how_to_cut, 0)
+
+    for i in range(g_batch):
+        ref_audio_path = g_ref_audio_path_list[i]
+        if not ref_audio_path:
             output.append(None)
+            continue
+
+        ref_lang = widgets[i]
+        ref_text = widgets[i + g_batch]
+
+        try:
+            generated = inference_main.get_tts_wav(
+                ref_audio_path,
+                ref_text or "",
+                ref_lang,
+                test_text,
+                text_language,
+                how_to_cut=cut_mode,
+                top_k=int(top_k),
+                top_p=float(top_p),
+                temperature=float(temperature),
+                speed_factor=float(speed_factor),
+                repetition_penalty=float(repetition_penalty),
+                seed=int(seed),
+                sample_steps=int(sample_steps),
+                super_sampling=bool(super_sampling),
+            )
+            sample_rate, audio_array = next(generated)
+            output.append((sample_rate, audio_array))
+        except Exception as exc:
+            print(f"Skip {ref_audio_path}: {exc}")
+            output.append(None)
+
     return output
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-l', '--list', type=str, default="ref.list", help='List of ref audio files, default is ref.list')
-    parser.add_argument('-p', '--port', type=int, default=14285, help='Port of WebUI, default is 14285')
-    parser.add_argument('-f', '--folder', type=str, default="",
-                        help='The directory of ref audio files, if not specified, abs path in the list file will be used, default is None.')
-    parser.add_argument('-b', '--batch', type=int, default=10,
-                        help='How many ref audio files will be processed at one time, default is 10')
-    parser.add_argument('-cd', '--check_duration', action='store_true', default=False,
-                        help='Whether to check if the duration of every ref audio is between 3 and 10 seconds.')
-    parser.add_argument('-r', '--random_order', action='store_true', default=False,
-                        help='Whether to randomize the ref audio list.')
-
+    parser.add_argument("-l", "--list", type=str, default="ref.list", help="Reference list file path")
+    parser.add_argument("-p", "--port", type=int, default=14285, help="WebUI port")
+    parser.add_argument(
+        "-f",
+        "--folder",
+        type=str,
+        default="",
+        help="Optional folder for reference audio; basename in list will be joined to this folder.",
+    )
+    parser.add_argument("-b", "--batch", type=int, default=10, help="Batch size per page")
+    parser.add_argument(
+        "-cd",
+        "--check_duration",
+        action="store_true",
+        default=False,
+        help="Check whether each reference audio duration is between 3 and 10 seconds.",
+    )
+    parser.add_argument(
+        "-r",
+        "--random_order",
+        action="store_true",
+        default=False,
+        help="Randomize the order of reference audios.",
+    )
     args = parser.parse_args()
 
-    SoVITS_weight_root = "SoVITS_weights"
-    GPT_weight_root = "GPT_weights"
-    os.makedirs(SoVITS_weight_root, exist_ok=True)
-    os.makedirs(GPT_weight_root, exist_ok=True)
+    g_ref_audio_widget_list = []
+    g_ref_lang_widget_list = []
+    g_ref_text_widget_list = []
+    g_test_audio_widget_list = []
+    g_save_widget_list = []
 
-    g_ref_audio_widget_list = []  # 参考音频播放控件列表
-    g_ref_audio_path_list = []  # 当前批次参考音频地址列表
-    g_ref_lang_widget_list = []  # 参考语言控件列表
-    g_ref_text_widget_list = []  # 参考文本控件列表
-    g_test_audio_widget_list = []   # 试听音频播放控件列表
-    g_save_widget_list = []  # 满意按钮控件列表
-
-    g_ref_list = []  # 参考音频文件列表
-    g_ref_list_max_index = 0  # 参考音频文件列表索引最大值
-
-    g_index = 0  # 当前的索引
-
-    g_ref_folder, g_batch = args.folder, args.batch
+    g_ref_folder = args.folder
+    g_batch = args.batch
 
     load_ref_list_file(args.list)
 
     if args.check_duration:
-        remove_noncompliant_audio_from_list()  # 检查音频长度功能
+        remove_noncompliant_audio_from_list()
 
     if args.random_order:
-        random.shuffle(g_ref_list)  # 检查音频顺序功能
+        random.shuffle(g_ref_list)
 
     g_SoVITS_names, g_GPT_names = get_weights_names()
 
-    # 默认加载第一个模型
-    if g_GPT_names and g_SoVITS_names:
-        inference_main.change_gpt_weights(g_GPT_names[0])
-        inference_main.change_sovits_weights(g_SoVITS_names[0])
-    else:
-        print("No model found! Please put your model into SoVITS_weights and GPT_weights.")
-        exit()
+    if not g_GPT_names or not g_SoVITS_names:
+        print("No model found. Put .pth files into SoVITS_weights* and .ckpt files into GPT_weights*.")
+        raise SystemExit(1)
+
+    current_version = inference_main.initialize(g_GPT_names[0], g_SoVITS_names[0])
+    language_choices = inference_main.get_supported_languages()
+    default_language = language_choices[0] if language_choices else inference_main.get_default_language()
+    version_text = f"SoVITS Version: {current_version}"
+    is_v3 = current_version == "v3"
 
     with gr.Blocks(title="GPT-SoVITS RefAudio Tester WebUI") as app:
-        gr.Markdown(value="# GPT-SoVITS RefAudio Tester WebUI\nDeveloped by 2DIPW Licensed under GNU GPLv3 ❤ Open source leads the world to a brighter future!")
+        gr.Markdown("# GPT-SoVITS RefAudio Tester WebUI")
+        gr.Markdown("Batch reference-audio preview with compatibility for GPT-SoVITS v1-v4.")
+
         with gr.Group():
-            gr.Markdown(value="模型选择")
+            gr.Markdown("## Model Selection")
             with gr.Row():
-                dropdownGPT = gr.Dropdown(label="GPT模型", choices=g_GPT_names, value=g_GPT_names[0],
-                                          interactive=True)
-                dropdownSoVITS = gr.Dropdown(label="SoVITS模型", choices=g_SoVITS_names, value=g_SoVITS_names[0],
-                                             interactive=True)
-                textboxOutputFolder = gr.Textbox(
-                    label="满意的参考音频复制到",
-                    interactive=True,
-                    value="output/")
-                btnRefresh = gr.Button("刷新模型列表")
-                btnRefresh.click(fn=refresh_model_list, inputs=[], outputs=[dropdownSoVITS, dropdownGPT])
-                dropdownSoVITS.change(inference_main.change_sovits_weights, [dropdownSoVITS], [])
-                dropdownGPT.change(inference_main.change_gpt_weights, [dropdownGPT], [])
-            gr.Markdown(value="合成选项")
+                dropdownGPT = gr.Dropdown(label="GPT Model", choices=g_GPT_names, value=g_GPT_names[0], interactive=True)
+                dropdownSoVITS = gr.Dropdown(
+                    label="SoVITS Model", choices=g_SoVITS_names, value=g_SoVITS_names[0], interactive=True
+                )
+                textboxOutputFolder = gr.Textbox(label="Copy approved reference audio to", value="output/", interactive=True)
+                btnRefresh = gr.Button("Refresh Models")
+
+            with gr.Row():
+                textboxModelVersion = gr.Textbox(label="Model Version", value=version_text, interactive=False)
+                textboxStatus = gr.Textbox(label="Status", value="Ready", interactive=False)
+
+            gr.Markdown("## Synthesis Options")
             with gr.Row():
                 textboxTestText = gr.Textbox(
-                    label="试听文本",
+                    label="Preview Text",
                     interactive=True,
-                    placeholder="用以合成试听音频的文本")
+                    placeholder="Input text used for synthesis preview",
+                )
                 dropdownTextLanguage = gr.Dropdown(
-                    label="合成语种",
-                    choices=["中文", "英文", "日文", "中英混合", "日英混合", "多语种混合"], value="中文",
-                    interactive=True
+                    label="Synthesis Language",
+                    choices=language_choices,
+                    value=default_language,
+                    interactive=True,
                 )
                 dropdownHowToCut = gr.Dropdown(
-                    label="切分方式",
-                    choices=["不切", "凑四句一切", "凑50字一切", "按中文句号。切", "按英文句号.切", "按标点符号切"],
-                    value="凑四句一切",
-                    interactive=True
+                    label="Text Split Method",
+                    choices=list(CUT_LABEL_TO_VALUE.keys()),
+                    value="Every 4 Sentences",
+                    interactive=True,
                 )
-                sliderTopK = gr.Slider(minimum=1, maximum=100, step=1, label="top_k", value=5, interactive=True)
-                sliderTopP = gr.Slider(minimum=0, maximum=1, step=0.05, label="top_p", value=1, interactive=True)
-                sliderTemperature = gr.Slider(minimum=0, maximum=1, step=0.05, label="temperature", value=1,
-                                              interactive=True)
-            gr.Markdown(value="试听批次")
+
             with gr.Row():
-                sliderStartIndex = gr.Slider(minimum=0, maximum=g_ref_list_max_index, step=g_batch, label="起始索引",
-                                             value=0,
-                                             interactive=True, )
-                sliderBatchSize = gr.Slider(minimum=1, maximum=100, step=1, label="每批数量", value=g_batch,
-                                            interactive=False)
-                btnPreBatch = gr.Button("上一批")
-                btnNextBatch = gr.Button("下一批")
-                btnInference = gr.Button("生成试听语音", variant="primary")
-            gr.Markdown(value="试听列表")
+                sliderTopK = gr.Slider(minimum=1, maximum=100, step=1, label="top_k", value=20, interactive=True)
+                sliderTopP = gr.Slider(minimum=0, maximum=1, step=0.01, label="top_p", value=0.6, interactive=True)
+                sliderTemperature = gr.Slider(
+                    minimum=0, maximum=1.5, step=0.01, label="temperature", value=0.6, interactive=True
+                )
+                sliderSpeedFactor = gr.Slider(
+                    minimum=0.6, maximum=1.65, step=0.01, label="speed_factor", value=1.0, interactive=True
+                )
+
+            with gr.Row():
+                sliderRepetitionPenalty = gr.Slider(
+                    minimum=0.8,
+                    maximum=2.0,
+                    step=0.01,
+                    label="repetition_penalty",
+                    value=1.35,
+                    interactive=True,
+                )
+                numberSeed = gr.Number(label="seed (-1 random)", value=-1, precision=0, interactive=True)
+                sliderSampleSteps = gr.Slider(
+                    minimum=4,
+                    maximum=128,
+                    step=4,
+                    label="sample_steps (v3 only)",
+                    value=32 if is_v3 else 8,
+                    visible=is_v3,
+                    interactive=is_v3,
+                )
+                checkboxSuperSampling = gr.Checkbox(
+                    label="super_sampling (v3 only)",
+                    value=False,
+                    visible=is_v3,
+                    interactive=is_v3,
+                )
+
+            gr.Markdown("## Batch Preview")
+            with gr.Row():
+                sliderStartIndex = gr.Slider(
+                    minimum=0,
+                    maximum=g_ref_list_max_index,
+                    step=max(g_batch, 1),
+                    label="Start Index",
+                    value=0,
+                    interactive=True,
+                )
+                sliderBatchSize = gr.Slider(
+                    minimum=1,
+                    maximum=100,
+                    step=1,
+                    label="Batch Size",
+                    value=g_batch,
+                    interactive=False,
+                )
+                btnPreBatch = gr.Button("Previous Batch")
+                btnNextBatch = gr.Button("Next Batch")
+                btnInference = gr.Button("Generate Preview Audio", variant="primary")
+
+            gr.Markdown("## Preview List")
             with gr.Row():
                 with gr.Column():
                     for i in range(g_batch):
                         with gr.Row():
-                            ref_no = gr.Number(
-                                value=i,
-                                visible=False)
-                            ref_audio = gr.Audio(
-                                label="参考音频",
-                                visible=True,
-                                scale=5
-                            )
-                            ref_lang = gr.Textbox(
-                                label="参考文本语言",
-                                visible=True,
-                                scale=1
-                            )
-                            ref_text = gr.Textbox(
-                                label="参考文本",
-                                visible=True,
-                                scale=5
-                            )
-                            test_audio = gr.Audio(
-                                label="试听音频",
-                                visible=True,
-                                scale=5
-                            )
-                            save = gr.Button(
-                                value="满意",
-                                scale=1
-                            )
+                            ref_no = gr.Number(value=i, visible=False)
+                            ref_audio = gr.Audio(label="Ref Audio", visible=True, scale=4)
+                            ref_lang = gr.Textbox(label="Ref Language", visible=True, scale=1)
+                            ref_text = gr.Textbox(label="Ref Text", visible=True, scale=4)
+                            test_audio = gr.Audio(label="Generated", visible=True, scale=4)
+                            save = gr.Button(value="Save", scale=1)
+
                             g_ref_audio_widget_list.append(ref_audio)
-                            g_ref_text_widget_list.append(ref_text)
                             g_ref_lang_widget_list.append(ref_lang)
+                            g_ref_text_widget_list.append(ref_text)
                             g_test_audio_widget_list.append(test_audio)
+                            g_save_widget_list.append(save)
+
                             save.click(
                                 copy_proved_ref_audio,
-                                inputs=[
-                                    ref_no,
-                                    ref_text,
-                                    textboxOutputFolder
-                                ],
-                                outputs=[
-                                    save
-                                ]
+                                inputs=[ref_no, ref_text, textboxOutputFolder],
+                                outputs=[save],
                             )
-                            g_save_widget_list.append(save)
+
+            btnRefresh.click(
+                fn=refresh_model_list,
+                inputs=[],
+                outputs=[dropdownSoVITS, dropdownGPT, textboxStatus],
+            )
+
+            dropdownSoVITS.change(
+                on_change_sovits_weights,
+                inputs=[dropdownSoVITS, dropdownTextLanguage],
+                outputs=[
+                    dropdownTextLanguage,
+                    textboxModelVersion,
+                    sliderSampleSteps,
+                    checkboxSuperSampling,
+                    textboxStatus,
+                ],
+            )
+
+            dropdownGPT.change(
+                on_change_gpt_weights,
+                inputs=[dropdownGPT],
+                outputs=[textboxStatus],
+            )
 
             sliderStartIndex.change(
                 change_index,
-                inputs=[
-                    sliderStartIndex,
-                    sliderBatchSize
-                ],
+                inputs=[sliderStartIndex, sliderBatchSize],
                 outputs=[
                     *g_ref_audio_widget_list,
                     *g_ref_lang_widget_list,
                     *g_ref_text_widget_list,
                     *g_test_audio_widget_list,
-                    *g_save_widget_list
-                ])
+                    *g_save_widget_list,
+                ],
+            )
 
             btnPreBatch.click(
                 previous_index,
-                inputs=[
-                    sliderStartIndex,
-                    sliderBatchSize
-                ],
+                inputs=[sliderStartIndex, sliderBatchSize],
                 outputs=[
                     sliderStartIndex,
                     *g_ref_audio_widget_list,
                     *g_ref_lang_widget_list,
                     *g_ref_text_widget_list,
                     *g_test_audio_widget_list,
-                    *g_save_widget_list
+                    *g_save_widget_list,
                 ],
             )
 
             btnNextBatch.click(
                 next_index,
-                inputs=[
-                    sliderStartIndex,
-                    sliderBatchSize
-                ],
+                inputs=[sliderStartIndex, sliderBatchSize],
                 outputs=[
                     sliderStartIndex,
                     *g_ref_audio_widget_list,
                     *g_ref_lang_widget_list,
                     *g_ref_text_widget_list,
                     *g_test_audio_widget_list,
-                    *g_save_widget_list
+                    *g_save_widget_list,
                 ],
             )
 
@@ -437,26 +640,26 @@ if __name__ == "__main__":
                     sliderTopK,
                     sliderTopP,
                     sliderTemperature,
+                    sliderSpeedFactor,
+                    sliderRepetitionPenalty,
+                    numberSeed,
+                    sliderSampleSteps,
+                    checkboxSuperSampling,
                     *g_ref_lang_widget_list,
-                    *g_ref_text_widget_list
+                    *g_ref_text_widget_list,
                 ],
-                outputs=[
-                    *g_test_audio_widget_list
-                ]
+                outputs=[*g_test_audio_widget_list],
             )
 
             app.load(
                 change_index,
-                inputs=[
-                    sliderStartIndex,
-                    sliderBatchSize
-                ],
+                inputs=[sliderStartIndex, sliderBatchSize],
                 outputs=[
                     *g_ref_audio_widget_list,
                     *g_ref_lang_widget_list,
                     *g_ref_text_widget_list,
                     *g_test_audio_widget_list,
-                    *g_save_widget_list
+                    *g_save_widget_list,
                 ],
             )
 
@@ -465,5 +668,5 @@ if __name__ == "__main__":
         inbrowser=True,
         quiet=True,
         share=False,
-        server_port=args.port
+        server_port=args.port,
     )

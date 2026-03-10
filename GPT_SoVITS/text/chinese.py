@@ -1,5 +1,4 @@
 import os
-import pdb
 import re
 
 import cn2an
@@ -17,7 +16,16 @@ pinyin_to_symbol_map = {
     for line in open(os.path.join(current_file_path, "opencpop-strict.txt")).readlines()
 }
 
-import jieba_fast.posseg as psg
+import logging
+
+try:
+    import jieba_fast as jieba_mod
+    import jieba_fast.posseg as psg
+except Exception:  # fallback for environments without C++ build toolchain
+    import jieba as jieba_mod
+    import jieba.posseg as psg
+
+jieba_mod.setLogLevel(logging.CRITICAL)
 
 
 rep_map = {
@@ -35,7 +43,7 @@ rep_map = {
     "/": ",",
     "—": "-",
     "~": "…",
-    "～":"…",
+    "～": "…",
 }
 
 tone_modifier = ToneSandhi()
@@ -47,11 +55,27 @@ def replace_punctuation(text):
 
     replaced_text = pattern.sub(lambda x: rep_map[x.group()], text)
 
-    replaced_text = re.sub(
-        r"[^\u4e00-\u9fa5" + "".join(punctuation) + r"]+", "", replaced_text
-    )
+    replaced_text = re.sub(r"[^\u4e00-\u9fa5" + "".join(punctuation) + r"]+", "", replaced_text)
 
     return replaced_text
+
+
+def replace_punctuation_with_en(text):
+    text = text.replace("嗯", "恩").replace("呣", "母")
+    pattern = re.compile("|".join(re.escape(p) for p in rep_map.keys()))
+
+    replaced_text = pattern.sub(lambda x: rep_map[x.group()], text)
+
+    replaced_text = re.sub(r"[^\u4e00-\u9fa5A-Za-z" + "".join(punctuation) + r"]+", "", replaced_text)
+
+    return replaced_text
+
+
+def replace_consecutive_punctuation(text):
+    punctuations = "".join(re.escape(p) for p in punctuation)
+    pattern = f"([{punctuations}])([{punctuations}])+"
+    result = re.sub(pattern, r"\1", text)
+    return result
 
 
 def g2p(text):
@@ -65,9 +89,7 @@ def _get_initials_finals(word):
     initials = []
     finals = []
     orig_initials = lazy_pinyin(word, neutral_tone_with_five=True, style=Style.INITIALS)
-    orig_finals = lazy_pinyin(
-        word, neutral_tone_with_five=True, style=Style.FINALS_TONE3
-    )
+    orig_finals = lazy_pinyin(word, neutral_tone_with_five=True, style=Style.FINALS_TONE3)
     for c, v in zip(orig_initials, orig_finals):
         initials.append(c)
         finals.append(v)
@@ -158,6 +180,9 @@ def text_normalize(text):
     dest_text = ""
     for sentence in sentences:
         dest_text += replace_punctuation(sentence)
+
+    # 避免重复标点引起的参考泄露
+    dest_text = replace_consecutive_punctuation(dest_text)
     return dest_text
 
 
