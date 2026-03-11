@@ -1,6 +1,7 @@
 ﻿# GPT-SoVITS RefAudio Tester（兼容 v1-v4）
 
 [English Version](README_EN.md)
+[日本語版](README_JA.md)
 
 本仓库保留了用于参考音频测试的批量预览 WebUI 工作流，并已切换到最新的 GPT-SoVITS 推理核心（`TTS_infer_pack`），以提升模型兼容性。
 
@@ -85,6 +86,8 @@ python webui.py -l ref.list -f <ref_audio_folder> -b 10
 
 ## WebUI 新增合成控制项
 
+- 支持界面语言切换：中文 / 日本語 / English
+- “合成语言”下拉框会随界面语言显示本地化名称（实际推理值保持不变）
 - `top_k`
 - `top_p`
 - `temperature`

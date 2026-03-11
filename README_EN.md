@@ -1,6 +1,7 @@
 ﻿# GPT-SoVITS RefAudio Tester (v1-v4 Compatible)
 
 [中文说明](README.md)
+[日本語版](README_JA.md)
 
 This repository keeps a batch preview WebUI workflow for reference-audio testing, and now uses the latest GPT-SoVITS inference core (`TTS_infer_pack`) for model compatibility.
 
@@ -85,6 +86,8 @@ Legacy language values in list files such as `ZH/JP/EN` are automatically normal
 
 ## New synthesis controls in WebUI
 
+- UI language switching: Chinese / Japanese / English
+- The "Synthesis Language" dropdown displays localized labels based on UI language (inference values stay unchanged).
 - `top_k`
 - `top_p`
 - `temperature`
