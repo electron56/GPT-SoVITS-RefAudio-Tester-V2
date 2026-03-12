@@ -84,6 +84,10 @@ UI_TEXTS = {
         "title": "# GPT-SoVITS 参考音频测试 WebUI",
         "subtitle": "批量参考音频预览，兼容 GPT-SoVITS v1-v4。",
         "ui_language": "界面语言",
+        "theme_mode": "界面主题",
+        "theme_system": "跟随系统",
+        "theme_light": "浅色",
+        "theme_dark": "深色",
         "model_selection": "## 模型选择",
         "gpt_model": "GPT 模型",
         "sovits_model": "SoVITS 模型",
@@ -140,6 +144,10 @@ UI_TEXTS = {
         "title": "# GPT-SoVITS 参照音声テスター WebUI",
         "subtitle": "参照音声の一括プレビュー。GPT-SoVITS v1-v4 に対応。",
         "ui_language": "UI 言語",
+        "theme_mode": "テーマ",
+        "theme_system": "システム",
+        "theme_light": "ライト",
+        "theme_dark": "ダーク",
         "model_selection": "## モデル選択",
         "gpt_model": "GPT モデル",
         "sovits_model": "SoVITS モデル",
@@ -196,6 +204,10 @@ UI_TEXTS = {
         "title": "# GPT-SoVITS RefAudio Tester WebUI",
         "subtitle": "Batch reference-audio preview with compatibility for GPT-SoVITS v1-v4.",
         "ui_language": "UI Language",
+        "theme_mode": "Theme",
+        "theme_system": "System",
+        "theme_light": "Light",
+        "theme_dark": "Dark",
         "model_selection": "## Model Selection",
         "gpt_model": "GPT Model",
         "sovits_model": "SoVITS Model",
@@ -253,55 +265,293 @@ UI_TEXTS = {
 UI_LANGUAGE_OPTIONS = [("中文", "zh"), ("日本語", "ja"), ("English", "en")]
 ROOT_PAIR_MAP = {gpt_root: sovits_root for gpt_root, sovits_root in zip(GPT_WEIGHT_ROOTS, SOVITS_WEIGHT_ROOTS)}
 
+APP_THEME = gr.themes.Default(
+    radius_size=gr.themes.sizes.radius_lg,
+    text_size=gr.themes.sizes.text_lg,
+).set(
+    body_background_fill="#f3f1ed",
+    body_background_fill_dark="#08111f",
+    body_text_color="#2f2419",
+    body_text_color_dark="#f3f7ff",
+    body_text_color_subdued="#72675d",
+    body_text_color_subdued_dark="#94a7c6",
+    background_fill_primary="rgba(250, 248, 244, 0.96)",
+    background_fill_primary_dark="rgba(16, 26, 40, 0.92)",
+    background_fill_secondary="rgba(240, 237, 232, 0.96)",
+    background_fill_secondary_dark="rgba(25, 38, 58, 0.96)",
+    block_background_fill="rgba(245, 242, 237, 0.98)",
+    block_background_fill_dark="rgba(20, 31, 49, 0.96)",
+    block_border_color="rgba(160, 152, 141, 0.2)",
+    block_border_color_dark="rgba(122, 146, 183, 0.18)",
+    block_label_text_color="#3e2f20",
+    block_label_text_color_dark="#f4f8ff",
+    block_title_text_color="#3e2f20",
+    block_title_text_color_dark="#ffffff",
+    input_background_fill="rgba(252, 250, 247, 0.97)",
+    input_background_fill_dark="rgba(17, 29, 47, 0.96)",
+    input_border_color="rgba(173, 165, 153, 0.28)",
+    input_border_color_dark="rgba(90, 118, 155, 0.36)",
+    input_border_color_focus="rgba(224, 135, 42, 0.74)",
+    input_border_color_focus_dark="rgba(75, 146, 255, 0.8)",
+    button_primary_background_fill="linear-gradient(135deg, #ff9829 0%, #ff6a00 100%)",
+    button_primary_background_fill_dark="linear-gradient(135deg, #4b92ff 0%, #1f63dd 100%)",
+    button_primary_background_fill_hover="linear-gradient(135deg, #ffa33a 0%, #ff7612 100%)",
+    button_primary_background_fill_hover_dark="linear-gradient(135deg, #5fa0ff 0%, #2d72ef 100%)",
+    button_primary_border_color="rgba(255, 128, 24, 0.05)",
+    button_primary_border_color_dark="transparent",
+    button_primary_text_color="#fffaf3",
+    button_primary_text_color_dark="#f6f9ff",
+    button_secondary_background_fill="linear-gradient(180deg, #f1efeb 0%, #e8e4de 100%)",
+    button_secondary_background_fill_dark="linear-gradient(180deg, rgba(88, 100, 120, 0.92) 0%, rgba(71, 82, 101, 0.98) 100%)",
+    button_secondary_background_fill_hover="linear-gradient(180deg, #f5f3ef 0%, #ece8e2 100%)",
+    button_secondary_background_fill_hover_dark="linear-gradient(180deg, rgba(103, 116, 138, 0.96) 0%, rgba(80, 92, 112, 1) 100%)",
+    button_secondary_border_color="rgba(167, 158, 148, 0.18)",
+    button_secondary_border_color_dark="rgba(132, 154, 190, 0.16)",
+    button_secondary_text_color="#4a3422",
+    button_secondary_text_color_dark="#f7f9fc",
+    link_text_color="#a55d19",
+    link_text_color_dark="#66a8ff",
+    slider_color="#e38b26",
+    slider_color_dark="#4b92ff",
+)
+
+APP_HEAD = """
+<script>
+(() => {
+  const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  let syncQueued = false;
+
+  const applySystemTheme = () => {
+    const resolvedMode = mediaQuery.matches ? "dark" : "light";
+    const isDark = resolvedMode === "dark";
+    const root = document.documentElement;
+    const body = document.body;
+
+    root.classList.toggle("dark", isDark);
+    root.dataset.themeMode = "system";
+    root.dataset.themeResolved = resolvedMode;
+
+    if (body) {
+      body.classList.toggle("dark", isDark);
+      body.dataset.themeMode = "system";
+      body.dataset.themeResolved = resolvedMode;
+    }
+  };
+
+  const ensureThemeConsistency = () => {
+    const shouldBeDark = mediaQuery.matches;
+    const rootIsDark = document.documentElement.classList.contains("dark");
+    const bodyIsDark = document.body ? document.body.classList.contains("dark") : shouldBeDark;
+
+    if (rootIsDark !== shouldBeDark || bodyIsDark !== shouldBeDark) {
+      applySystemTheme();
+    }
+  };
+
+  const scheduleSync = () => {
+    if (syncQueued) {
+      return;
+    }
+    syncQueued = true;
+    window.requestAnimationFrame(() => {
+      syncQueued = false;
+      ensureThemeConsistency();
+    });
+  };
+
+  const refreshTheme = () => {
+    applySystemTheme();
+    scheduleSync();
+  };
+
+  const bootstrap = () => {
+    if (window.__gptSovitsThemeController) {
+      window.__gptSovitsThemeController.refresh();
+      return;
+    }
+
+    document.addEventListener("domchange", scheduleSync);
+
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", refreshTheme);
+    } else if (typeof mediaQuery.addListener === "function") {
+      mediaQuery.addListener(refreshTheme);
+    }
+
+    const initializeObservers = () => {
+      if (!document.body) {
+        window.requestAnimationFrame(initializeObservers);
+        return;
+      }
+
+      const domObserver = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          if (mutation.type === "childList") {
+            scheduleSync();
+            return;
+          }
+        }
+      });
+
+      const classObserver = new MutationObserver(() => {
+        scheduleSync();
+      });
+
+      domObserver.observe(document.body, { childList: true, subtree: true });
+      classObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+      classObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+
+      refreshTheme();
+
+      window.__gptSovitsThemeController = {
+        refresh: refreshTheme,
+      };
+    };
+
+    initializeObservers();
+  };
+
+  applySystemTheme();
+  bootstrap();
+})();
+</script>
+"""
+
 APP_CSS = """
 :root {
+    color-scheme: light;
+    --slider-color: #e38b26;
+    --color-accent: #e38b26;
+    --app-page-bg:
+        radial-gradient(circle at top left, rgba(255, 255, 255, 0.48), transparent 30%),
+        radial-gradient(circle at top right, rgba(229, 220, 206, 0.2), transparent 26%),
+        linear-gradient(180deg, #f3f1ed 0%, #ece8e1 100%);
+    --app-text-primary: #2f2419;
+    --app-text-muted: #72675d;
+    --app-shell-border: rgba(160, 152, 141, 0.18);
+    --app-panel-fill-primary: rgba(250, 248, 244, 0.94);
+    --app-panel-fill-secondary: rgba(240, 237, 232, 0.96);
+    --app-section-bg: linear-gradient(180deg, rgba(245, 242, 237, 0.99) 0%, rgba(240, 236, 231, 0.98) 100%);
+    --app-section-header-bg: linear-gradient(180deg, #e8e2d9 0%, #e2dbd2 100%);
+    --app-card-bg: linear-gradient(180deg, rgba(251, 249, 245, 0.99) 0%, rgba(245, 242, 237, 0.97) 100%);
+    --app-card-border: rgba(168, 160, 150, 0.18);
+    --app-float-shadow: 0 16px 34px rgba(83, 72, 61, 0.08);
+    --app-input-bg: rgba(252, 250, 247, 0.98);
+    --app-input-border: rgba(173, 165, 153, 0.28);
+    --app-input-border-focus: rgba(224, 135, 42, 0.74);
+    --app-input-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.56);
+    --app-input-shadow-focus:
+        0 0 0 1px rgba(224, 135, 42, 0.58),
+        0 0 0 4px rgba(224, 135, 42, 0.12);
+    --app-audio-bg: linear-gradient(180deg, rgba(248, 245, 240, 0.99) 0%, rgba(241, 238, 232, 0.96) 100%);
+    --app-audio-pill-bg: rgba(249, 247, 242, 0.94);
+    --app-audio-pill-border: rgba(177, 169, 158, 0.34);
+    --app-audio-pill-text: #645a51;
+    --app-theme-switch-bg: rgba(238, 234, 228, 0.96);
+    --app-theme-switch-border: rgba(173, 165, 153, 0.24);
+    --app-theme-switch-text: #72675d;
+    --app-theme-switch-hover: rgba(255, 255, 255, 0.56);
+    --app-theme-switch-active-bg: rgba(251, 249, 245, 0.98);
+    --app-theme-switch-active-text: #2f2419;
+}
+
+:root.dark,
+:root .dark {
     color-scheme: dark;
+    --slider-color: #4b92ff;
+    --color-accent: #4b92ff;
+    --app-page-bg:
+        radial-gradient(circle at top left, rgba(58, 101, 186, 0.24), transparent 34%),
+        radial-gradient(circle at top right, rgba(41, 83, 166, 0.2), transparent 30%),
+        linear-gradient(180deg, #050b16 0%, #0a1424 100%);
+    --app-text-primary: #f3f7ff;
+    --app-text-muted: #94a7c6;
+    --app-shell-border: rgba(122, 146, 183, 0.18);
+    --app-panel-fill-primary: rgba(8, 15, 27, 0.72);
+    --app-panel-fill-secondary: rgba(17, 29, 47, 0.94);
+    --app-section-bg: linear-gradient(180deg, rgba(18, 30, 47, 0.96) 0%, rgba(16, 26, 40, 0.96) 100%);
+    --app-section-header-bg: linear-gradient(180deg, rgba(76, 89, 110, 0.98) 0%, rgba(64, 75, 94, 0.94) 100%);
+    --app-card-bg: linear-gradient(180deg, rgba(24, 37, 58, 0.74) 0%, rgba(20, 31, 49, 0.8) 100%);
+    --app-card-border: rgba(122, 146, 183, 0.16);
+    --app-float-shadow: 0 20px 44px rgba(0, 0, 0, 0.18);
+    --app-input-bg: rgba(21, 34, 53, 0.96);
+    --app-input-border: rgba(90, 118, 155, 0.36);
+    --app-input-border-focus: rgba(75, 146, 255, 0.8);
+    --app-input-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+    --app-input-shadow-focus:
+        0 0 0 1px rgba(75, 146, 255, 0.62),
+        0 0 0 4px rgba(75, 146, 255, 0.12);
+    --app-audio-bg: linear-gradient(180deg, rgba(18, 29, 47, 0.96) 0%, rgba(15, 24, 39, 0.96) 100%);
+    --app-audio-pill-bg: rgba(17, 27, 44, 0.94);
+    --app-audio-pill-border: rgba(92, 119, 154, 0.34);
+    --app-audio-pill-text: #a7b9d5;
+    --app-theme-switch-bg: rgba(18, 29, 46, 0.92);
+    --app-theme-switch-border: rgba(91, 118, 153, 0.22);
+    --app-theme-switch-text: #94a7c6;
+    --app-theme-switch-hover: rgba(255, 255, 255, 0.04);
+    --app-theme-switch-active-bg: rgba(75, 146, 255, 0.16);
+    --app-theme-switch-active-text: #f4f8ff;
+}
+
+html,
+body {
+    min-height: 100%;
+    background: var(--app-page-bg);
+    color: var(--app-text-primary);
 }
 
 body {
-    background:
-        radial-gradient(circle at top left, rgba(65, 102, 175, 0.22), transparent 30%),
-        radial-gradient(circle at top right, rgba(255, 116, 32, 0.12), transparent 24%),
-        linear-gradient(180deg, #08111f 0%, #0d1728 100%);
+    margin: 0;
 }
 
 .gradio-container {
-    max-width: 1920px !important;
-    padding: 24px 36px 48px !important;
+    width: 100% !important;
+    max-width: 100vw !important;
+    box-sizing: border-box !important;
+    padding: 10px 10px 24px !important;
     background: transparent !important;
+    color: var(--app-text-primary) !important;
     font-family: "Segoe UI", "Microsoft YaHei UI", "Noto Sans SC", sans-serif !important;
-    --body-text-color: #f3f7ff;
-    --body-text-color-subdued: #92a6c6;
-    --background-fill-primary: rgba(8, 15, 27, 0.72);
-    --background-fill-secondary: rgba(17, 29, 47, 0.94);
-    --block-background-fill: rgba(26, 38, 58, 0.94);
-    --block-border-color: rgba(122, 146, 183, 0.18);
+    --body-text-color: var(--app-text-primary);
+    --body-text-color-subdued: var(--app-text-muted);
+    --background-fill-primary: var(--app-panel-fill-primary);
+    --background-fill-secondary: var(--app-panel-fill-secondary);
+    --block-background-fill: var(--app-section-bg);
+    --block-border-color: var(--app-shell-border);
     --block-border-width: 1px;
-    --block-radius: 18px;
-    --block-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
-    --block-padding: 16px;
-    --input-background-fill: rgba(21, 34, 53, 0.96);
-    --input-border-color: rgba(90, 118, 155, 0.36);
-    --input-border-color-focus: rgba(63, 126, 255, 0.8);
-    --input-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
-    --input-shadow-focus:
-        0 0 0 1px rgba(63, 126, 255, 0.62),
-        0 0 0 4px rgba(63, 126, 255, 0.12);
+    --block-radius: 0px;
+    --block-shadow: var(--app-float-shadow);
+    --block-padding: 14px;
+    --input-background-fill: var(--app-input-bg);
+    --input-border-color: var(--app-input-border);
+    --input-border-color-focus: var(--app-input-border-focus);
+    --input-shadow: var(--app-input-shadow);
+    --input-shadow-focus: var(--app-input-shadow-focus);
+    --button-primary-background-fill: linear-gradient(135deg, #ff9829 0%, #ff6a00 100%);
+    --button-primary-background-fill-hover: linear-gradient(135deg, #ffa33a 0%, #ff7612 100%);
+    --button-primary-border-color: transparent;
+    --button-primary-text-color: #fffaf3;
+    --button-secondary-background-fill: linear-gradient(180deg, #f1efeb 0%, #e8e4de 100%);
+    --button-secondary-background-fill-hover: linear-gradient(180deg, #f5f3ef 0%, #ece8e2 100%);
+    --button-secondary-border-color: rgba(167, 158, 148, 0.18);
+    --button-secondary-text-color: #4a3422;
+}
+
+:root.dark .gradio-container,
+:root .dark .gradio-container {
+    --button-primary-background-fill: linear-gradient(135deg, #4b92ff 0%, #1f63dd 100%);
+    --button-primary-background-fill-hover: linear-gradient(135deg, #5fa0ff 0%, #2d72ef 100%);
+    --button-primary-text-color: #f6f9ff;
     --button-secondary-background-fill:
-        linear-gradient(180deg, rgba(88, 100, 120, 0.9) 0%, rgba(71, 82, 101, 0.96) 100%);
+        linear-gradient(180deg, rgba(88, 100, 120, 0.92) 0%, rgba(71, 82, 101, 0.98) 100%);
     --button-secondary-background-fill-hover:
         linear-gradient(180deg, rgba(103, 116, 138, 0.96) 0%, rgba(80, 92, 112, 1) 100%);
     --button-secondary-border-color: rgba(132, 154, 190, 0.16);
     --button-secondary-text-color: #f7f9fc;
-    --button-primary-background-fill: linear-gradient(135deg, #ff8b1f 0%, #ff6200 100%);
-    --button-primary-background-fill-hover: linear-gradient(135deg, #ff962d 0%, #ff6f12 100%);
-    --button-primary-border-color: transparent;
-    --button-primary-text-color: #fffaf4;
-    --color-accent: #2f78ff;
 }
 
 .app-shell {
-    gap: 18px !important;
+    gap: 14px !important;
 }
 
 .app-title,
@@ -312,10 +562,25 @@ body {
 .section-panel {
     padding: 0 !important;
     overflow: hidden !important;
-    border: 1px solid rgba(122, 146, 183, 0.18) !important;
-    border-radius: 20px !important;
-    background: linear-gradient(180deg, rgba(18, 30, 47, 0.96) 0%, rgba(16, 26, 40, 0.96) 100%) !important;
-    box-shadow: 0 20px 44px rgba(0, 0, 0, 0.16) !important;
+    border: 1px solid var(--app-shell-border) !important;
+    border-radius: 0 !important;
+    background: var(--app-section-bg) !important;
+    box-shadow: var(--app-float-shadow) !important;
+}
+
+.section-panel,
+.section-panel > div,
+.model-section,
+.model-section > div,
+.synthesis-section,
+.synthesis-section > div,
+.batch-section,
+.batch-section > div,
+.preview-section,
+.preview-section > div,
+.preview-list-shell,
+.preview-list-shell > div {
+    border-radius: 0 !important;
 }
 
 .section-heading {
@@ -327,45 +592,63 @@ body {
 
 .section-heading h2 {
     margin: 0 !important;
-    padding: 14px 22px !important;
-    border-bottom: 1px solid rgba(152, 172, 203, 0.12);
-    background: linear-gradient(90deg, rgba(76, 89, 110, 0.96) 0%, rgba(64, 75, 94, 0.92) 100%);
-    color: #ffffff !important;
-    font-size: 20px !important;
+    padding: 12px 14px !important;
+    border-bottom: 1px solid var(--app-shell-border);
+    background: var(--app-section-header-bg);
+    color: var(--app-text-primary) !important;
+    font-size: 17px !important;
     font-weight: 700 !important;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.015em;
 }
 
 .control-row {
     flex-wrap: wrap !important;
-    gap: 14px !important;
-    padding: 18px 22px 0 !important;
+    gap: 10px !important;
+    padding: 12px 14px 0 !important;
 }
 
 .control-row > * {
+    min-width: 210px !important;
+}
+
+.batch-row > * {
     min-width: 0 !important;
+}
+
+.synth-primary-row .test-text {
+    min-width: 340px !important;
+}
+
+.batch-sliders > * {
+    min-width: 220px !important;
 }
 
 .model-meta-row,
 .synth-secondary-row,
 .batch-row {
-    padding-bottom: 22px !important;
+    padding-bottom: 18px !important;
 }
 
 .model-meta-row,
 .synth-secondary-row {
-    padding-top: 12px !important;
+    padding-top: 8px !important;
 }
 
-.gradio-container label > span {
-    color: #f4f8ff !important;
-    font-size: 15px !important;
-    font-weight: 600 !important;
+.gradio-container label > span,
+.gradio-container .label-wrap span {
+    color: var(--app-text-primary) !important;
+    font-size: 14px !important;
+    font-weight: 650 !important;
 }
 
 .gradio-container input,
 .gradio-container textarea {
-    font-size: 16px !important;
+    font-size: 15px !important;
+    color: var(--app-text-primary) !important;
+}
+
+.gradio-container textarea {
+    line-height: 1.55 !important;
 }
 
 .gradio-container button {
@@ -375,7 +658,42 @@ body {
 
 .gradio-container button:hover {
     transform: translateY(-1px);
-    filter: brightness(1.04);
+    filter: brightness(1.03);
+}
+
+.gradio-container .wrap,
+.gradio-container .options {
+    border-color: var(--app-input-border) !important;
+    background: var(--app-input-bg) !important;
+}
+
+.gradio-container .wrap:focus-within {
+    border-color: var(--app-input-border-focus) !important;
+    box-shadow: var(--app-input-shadow-focus) !important;
+}
+
+.gradio-container .wrap-inner {
+    padding: 9px 12px !important;
+}
+
+.gradio-container .secondary-wrap {
+    min-height: 44px !important;
+}
+
+.gradio-container .options {
+    border: 1px solid var(--app-shell-border) !important;
+    box-shadow: var(--app-float-shadow) !important;
+}
+
+.gradio-container .options .item {
+    margin: 4px !important;
+    border-radius: 10px !important;
+    padding: 9px 10px !important;
+}
+
+.gradio-container .options .item:hover,
+.gradio-container .options .active {
+    background: var(--app-panel-fill-secondary) !important;
 }
 
 .ui-language-select,
@@ -392,49 +710,67 @@ body {
 }
 
 .test-text textarea {
-    min-height: 126px !important;
+    min-height: 104px !important;
 }
 
 .model-row .refresh-button,
 .batch-actions-row .batch-nav,
 .batch-actions-row .batch-cta {
     height: 100% !important;
-    min-height: 118px !important;
+    min-height: 92px !important;
     border-radius: 16px !important;
-    font-size: 20px !important;
+    font-size: 18px !important;
     font-weight: 700 !important;
 }
 
 .model-row .refresh-button {
-    background: linear-gradient(180deg, rgba(93, 105, 125, 0.94) 0%, rgba(74, 85, 104, 0.98) 100%) !important;
+    background: var(--button-secondary-background-fill) !important;
+    color: var(--button-secondary-text-color) !important;
 }
 
 .batch-actions-row {
-    gap: 14px !important;
+    gap: 10px !important;
     height: 100% !important;
 }
 
 .batch-actions-row .batch-nav {
-    background: linear-gradient(180deg, rgba(88, 100, 120, 0.9) 0%, rgba(71, 82, 101, 0.96) 100%) !important;
+    background: var(--button-secondary-background-fill) !important;
+    color: var(--button-secondary-text-color) !important;
 }
 
 .batch-actions-row .batch-cta {
-    background: linear-gradient(135deg, #ff8b1f 0%, #ff6200 100%) !important;
+    background: var(--button-primary-background-fill) !important;
+    color: var(--button-primary-text-color) !important;
 }
 
 .preview-list-shell {
-    gap: 14px !important;
-    padding: 18px 22px 22px !important;
+    gap: 0 !important;
+    padding: 0 !important;
+}
+
+.preview-list-shell > div {
+    gap: 0 !important;
+    padding: 0 !important;
 }
 
 .preview-item {
+    display: grid;
+    grid-template-columns: minmax(280px, 1.2fr) minmax(220px, 0.9fr) minmax(280px, 1.2fr) 96px;
     align-items: stretch !important;
-    flex-wrap: nowrap !important;
-    gap: 14px !important;
-    padding: 14px !important;
-    border: 1px solid rgba(122, 146, 183, 0.16);
-    border-radius: 16px;
-    background: linear-gradient(180deg, rgba(24, 37, 58, 0.72) 0%, rgba(20, 31, 49, 0.78) 100%);
+    gap: 8px !important;
+    padding: 8px !important;
+    border: 1px solid var(--app-card-border);
+    border-radius: 0;
+    background: var(--app-card-bg);
+}
+
+.preview-item + .preview-item {
+    margin-top: -1px !important;
+}
+
+.preview-item.hide,
+.preview-item.hidden {
+    display: none !important;
 }
 
 .preview-item > * {
@@ -443,68 +779,285 @@ body {
 }
 
 .preview-meta {
-    gap: 12px !important;
+    grid-column: 2;
+    gap: 10px !important;
     min-height: 0 !important;
 }
 
 .preview-ref-audio,
 .preview-gen-audio {
     min-height: 0 !important;
+    --neutral-400: var(--app-audio-pill-text);
+    --text-secondary: var(--app-text-muted);
+    --block-radius: 0px;
+    --block-label-right-radius: 0px;
+}
+
+.preview-ref-audio {
+    grid-column: 1;
+}
+
+.preview-gen-audio {
+    grid-column: 3;
+}
+
+.preview-ref-audio > div,
+.preview-gen-audio > div {
+    height: 100%;
+    border: 1px solid var(--app-card-border);
+    border-radius: 0;
+    background: var(--app-audio-bg);
+}
+
+.preview-ref-audio label,
+.preview-ref-audio .label-wrap {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    min-height: calc(1.35em * 4 + 20px) !important;
+    max-height: calc(1.35em * 4 + 20px) !important;
+    padding: 10px 56px 10px 42px !important;
+    overflow: hidden !important;
+    box-sizing: border-box !important;
+    border-radius: 0 !important;
+}
+
+.preview-gen-audio label,
+.preview-gen-audio .label-wrap {
+    border-radius: 0 !important;
+}
+
+.preview-ref-audio label > span,
+.preview-ref-audio .label-wrap span {
+    display: -webkit-box !important;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    overflow: hidden !important;
+    white-space: normal !important;
+    text-align: center !important;
+    line-height: 1.35 !important;
+    width: 100% !important;
+}
+
+.preview-ref-audio .component-wrapper,
+.preview-gen-audio .component-wrapper,
+.preview-ref-audio .minimal-audio-player,
+.preview-gen-audio .minimal-audio-player {
+    background: transparent !important;
+    border-radius: 0 !important;
+}
+
+.preview-ref-audio .component-wrapper,
+.preview-gen-audio .component-wrapper {
+    padding: 8px !important;
+}
+
+.preview-ref-audio .icon-button-wrapper,
+.preview-gen-audio .icon-button-wrapper {
+    width: auto !important;
+    height: auto !important;
+    min-height: 0 !important;
+    gap: 0 !important;
+    padding: 2px !important;
+    border-radius: 0 !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+.preview-ref-audio .icon-button-wrapper.hide-top-corner,
+.preview-ref-audio .icon-button-wrapper.display-top-corner,
+.preview-gen-audio .icon-button-wrapper.hide-top-corner,
+.preview-gen-audio .icon-button-wrapper.display-top-corner {
+    border-radius: 0 !important;
+}
+
+.preview-ref-audio .icon-button-wrapper.top-panel,
+.preview-gen-audio .icon-button-wrapper.top-panel {
+    top: 8px !important;
+    right: 8px !important;
+}
+
+.preview-ref-audio .icon-button-wrapper > *,
+.preview-gen-audio .icon-button-wrapper > * {
+    height: auto !important;
+}
+
+.preview-ref-audio .icon-button-wrapper button,
+.preview-gen-audio .icon-button-wrapper button,
+.preview-ref-audio .icon-button-wrapper a.download-link,
+.preview-gen-audio .icon-button-wrapper a.download-link {
+    width: 32px !important;
+    height: 32px !important;
+    min-height: 32px !important;
+    margin: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+.preview-ref-audio .text-button,
+.preview-gen-audio .text-button,
+.preview-ref-audio .playback,
+.preview-gen-audio .playback {
+    background: var(--app-audio-pill-bg) !important;
+    border-color: var(--app-audio-pill-border) !important;
+    color: var(--app-audio-pill-text) !important;
+}
+
+.preview-ref-audio #time,
+.preview-gen-audio #time,
+.preview-ref-audio #duration,
+.preview-gen-audio #duration {
+    color: var(--app-text-muted) !important;
 }
 
 .preview-ref-lang input,
 .preview-ref-lang textarea {
-    min-height: 56px !important;
-    max-height: 56px !important;
+    min-height: 44px !important;
+    max-height: 44px !important;
 }
 
 .preview-ref-text textarea {
-    min-height: 132px !important;
-    max-height: 132px !important;
+    min-height: 96px !important;
+    max-height: 96px !important;
     overflow-y: auto !important;
 }
 
 .preview-save {
+    grid-column: 4;
     min-height: 0 !important;
-    border-radius: 16px !important;
-    font-size: 18px !important;
+    min-width: 96px !important;
+    height: 100% !important;
+    align-self: stretch !important;
+    border-radius: 14px !important;
+    font-size: 16px !important;
     font-weight: 700 !important;
-    background: linear-gradient(180deg, rgba(93, 105, 125, 0.94) 0%, rgba(74, 85, 104, 0.98) 100%) !important;
+    background: var(--button-secondary-background-fill) !important;
+    color: var(--button-secondary-text-color) !important;
 }
 
-@media (max-width: 1600px) {
+@media (max-width: 1180px) {
     .preview-item {
-        flex-wrap: wrap !important;
+        grid-template-columns: minmax(0, 1.06fr) minmax(260px, 0.94fr);
+        grid-template-rows: auto minmax(190px, auto);
+        gap: 0 !important;
+        padding: 0 !important;
+        background: var(--app-card-bg);
+    }
+
+    .preview-ref-audio {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    .preview-meta {
+        grid-column: 2;
+        grid-row: 1;
+        gap: 0 !important;
+        background: var(--app-card-bg);
+    }
+
+    .preview-meta > div + div {
+        border-top: 1px solid var(--app-card-border);
+    }
+
+    .preview-gen-audio {
+        grid-column: 1;
+        grid-row: 2;
     }
 
     .preview-save {
-        min-height: 84px !important;
+        grid-column: 2;
+        grid-row: 2;
+        min-height: 100% !important;
+        min-width: 0 !important;
+        border-radius: 0 !important;
+        border-top: 1px solid var(--app-card-border) !important;
+    }
+
+    .preview-gen-audio > div,
+    .preview-save {
+        height: 100% !important;
+    }
+
+    .preview-gen-audio > div {
+        border-top: 1px solid var(--app-card-border);
     }
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 1280px) {
     .gradio-container {
-        padding: 18px !important;
+        padding: 8px 8px 18px !important;
     }
 
     .control-row {
-        padding: 16px 16px 0 !important;
+        padding: 10px 10px 0 !important;
+        gap: 8px !important;
+    }
+
+    .control-row > * {
+        min-width: 180px !important;
+    }
+
+    .synth-primary-row .test-text {
+        min-width: 280px !important;
+    }
+
+    .batch-sliders > * {
+        min-width: 200px !important;
     }
 
     .preview-list-shell {
-        padding: 16px !important;
+        padding: 0 !important;
     }
 
     .section-heading h2 {
-        padding: 12px 16px !important;
-        font-size: 18px !important;
+        padding: 10px 11px !important;
+        font-size: 16px !important;
     }
 
     .model-row .refresh-button,
     .batch-actions-row .batch-nav,
     .batch-actions-row .batch-cta {
-        min-height: 86px !important;
-        font-size: 18px !important;
+        min-height: 80px !important;
+        font-size: 17px !important;
+    }
+}
+
+@media (max-width: 660px) {
+    .gradio-container {
+        padding: 6px 4px 14px !important;
+    }
+
+    .preview-item {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto;
+        gap: 0 !important;
+    }
+
+    .preview-ref-audio,
+    .preview-meta,
+    .preview-gen-audio,
+    .preview-save {
+        grid-column: 1;
+        grid-row: auto;
+        border-left: none !important;
+    }
+
+    .preview-meta > div + div,
+    .preview-save,
+    .preview-gen-audio > div {
+        border-top: 1px solid var(--app-card-border) !important;
+    }
+
+    .preview-save {
+        min-height: 72px !important;
+        min-width: 100% !important;
+    }
+
+    .preview-ref-text textarea {
+        min-height: 96px !important;
+        max-height: 96px !important;
     }
 }
 """
@@ -1202,7 +1755,7 @@ if __name__ == "__main__":
     version_text = t("version_text", version=current_version)
     is_v3 = current_version == "v3"
 
-    with gr.Blocks(title="GPT-SoVITS RefAudio Tester WebUI", css=APP_CSS) as app:
+    with gr.Blocks(title="GPT-SoVITS RefAudio Tester WebUI") as app:
         with gr.Column(elem_classes=["app-shell"]):
             mdTitle = gr.Markdown(t("title"), elem_classes=["app-title"])
             mdSubtitle = gr.Markdown(t("subtitle"), elem_classes=["app-subtitle"])
@@ -1270,6 +1823,7 @@ if __name__ == "__main__":
                         lines=3,
                         max_lines=4,
                         scale=5,
+                        min_width=360,
                         elem_classes=["test-text"],
                     )
                     dropdownTextLanguage = gr.Dropdown(
@@ -1278,6 +1832,7 @@ if __name__ == "__main__":
                         value=default_language,
                         interactive=True,
                         scale=2,
+                        min_width=220,
                     )
                     dropdownHowToCut = gr.Dropdown(
                         label=t("split_method"),
@@ -1285,6 +1840,7 @@ if __name__ == "__main__":
                         value="every_4_sentences",
                         interactive=True,
                         scale=2,
+                        min_width=220,
                     )
                     sliderTopK = gr.Slider(
                         minimum=1,
@@ -1294,6 +1850,7 @@ if __name__ == "__main__":
                         value=20,
                         interactive=True,
                         scale=2,
+                        min_width=250,
                     )
                     sliderTopP = gr.Slider(
                         minimum=0,
@@ -1303,6 +1860,7 @@ if __name__ == "__main__":
                         value=0.6,
                         interactive=True,
                         scale=2,
+                        min_width=250,
                     )
                     sliderTemperature = gr.Slider(
                         minimum=0,
@@ -1312,6 +1870,7 @@ if __name__ == "__main__":
                         value=0.6,
                         interactive=True,
                         scale=2,
+                        min_width=250,
                     )
 
                 with gr.Row(elem_classes=["control-row", "synth-secondary-row"], equal_height=True):
@@ -1323,6 +1882,7 @@ if __name__ == "__main__":
                         value=1.0,
                         interactive=True,
                         scale=2,
+                        min_width=250,
                     )
                     sliderRepetitionPenalty = gr.Slider(
                         minimum=0.8,
@@ -1332,6 +1892,7 @@ if __name__ == "__main__":
                         value=1.35,
                         interactive=True,
                         scale=2,
+                        min_width=250,
                     )
                     numberSeed = gr.Number(
                         label="seed (-1 random)",
@@ -1339,6 +1900,7 @@ if __name__ == "__main__":
                         precision=0,
                         interactive=True,
                         scale=2,
+                        min_width=250,
                     )
                     sliderSampleSteps = gr.Slider(
                         minimum=4,
@@ -1349,6 +1911,7 @@ if __name__ == "__main__":
                         visible=is_v3,
                         interactive=is_v3,
                         scale=2,
+                        min_width=220,
                     )
                     checkboxSuperSampling = gr.Checkbox(
                         label=t("super_sampling_v3"),
@@ -1371,6 +1934,7 @@ if __name__ == "__main__":
                                 value=0,
                                 interactive=True,
                                 scale=4,
+                                min_width=280,
                             )
                             sliderBatchSize = gr.Slider(
                                 minimum=1,
@@ -1380,6 +1944,7 @@ if __name__ == "__main__":
                                 value=g_batch,
                                 interactive=True,
                                 scale=3,
+                                min_width=250,
                             )
                             dropdownSpeaker = gr.Dropdown(
                                 label=t("speaker_filter"),
@@ -1387,6 +1952,7 @@ if __name__ == "__main__":
                                 value=g_current_speaker,
                                 interactive=True,
                                 scale=3,
+                                min_width=240,
                             )
 
                     with gr.Column(scale=7):
@@ -1412,13 +1978,14 @@ if __name__ == "__main__":
                 mdPreviewList = gr.Markdown(t("preview_list"), elem_classes=["section-heading"])
                 with gr.Column(elem_classes=["preview-list-shell"]):
                     for i in range(MAX_PREVIEW_ROWS):
-                        with gr.Row(elem_classes=["preview-item"], equal_height=True) as preview_row:
+                        with gr.Row(elem_classes=["preview-item"], equal_height=True, visible=False) as preview_row:
                             ref_no = gr.Number(value=i, visible=False)
                             ref_audio = gr.Audio(
                                 label=t("ref_audio"),
                                 visible=True,
                                 scale=5,
                                 min_width=280,
+                                buttons=["download"],
                                 elem_classes=["preview-ref-audio"],
                             )
                             with gr.Column(scale=5, elem_classes=["preview-meta"]):
@@ -1443,12 +2010,13 @@ if __name__ == "__main__":
                                 visible=True,
                                 scale=5,
                                 min_width=280,
+                                buttons=["download"],
                                 elem_classes=["preview-gen-audio"],
                             )
                             save = gr.Button(
                                 value=t("save"),
                                 scale=1,
-                                min_width=120,
+                                min_width=108,
                                 elem_classes=["preview-save"],
                             )
 
@@ -1604,5 +2172,8 @@ if __name__ == "__main__":
         quiet=True,
         share=False,
         server_port=args.port,
+        theme=APP_THEME,
+        css=APP_CSS,
+        head=APP_HEAD,
         allowed_paths=get_gradio_allowed_paths(),
     )
