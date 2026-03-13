@@ -443,6 +443,7 @@ class TTS:
             "overlapped_len": None,
         }
 
+        self._clear_mute_emb_sim_matrix()
         self._init_models()
 
         self.text_preprocessor: TextPreprocessor = TextPreprocessor(
@@ -472,6 +473,22 @@ class TTS:
         self.init_bert_weights(self.configs.bert_base_path)
         self.init_cnhuhbert_weights(self.configs.cnhuhbert_base_path)
         # self.enable_half_precision(self.configs.is_half)
+
+    def _clear_mute_emb_sim_matrix(self):
+        self.configs.mute_emb_sim_matrix = None
+
+    def _ensure_mute_emb_sim_matrix(self):
+        if self.configs.mute_emb_sim_matrix is not None:
+            return self.configs.mute_emb_sim_matrix
+        if self.t2s_model is None:
+            return None
+
+        with torch.no_grad():
+            codebook = self.t2s_model.model.ar_audio_embedding.weight.detach().float().cpu()
+            mute_token = self.configs.mute_tokens[self.configs.version]
+            mute_emb = codebook[mute_token].unsqueeze(0)
+            self.configs.mute_emb_sim_matrix = F.cosine_similarity(mute_emb, codebook, dim=-1)
+        return self.configs.mute_emb_sim_matrix
 
     def init_cnhuhbert_weights(self, base_path: str):
         print(f"Loading CNHuBERT weights from {base_path}")
@@ -607,10 +624,7 @@ class TTS:
         if self.configs.is_half and str(self.configs.device) != "cpu":
             self.t2s_model = self.t2s_model.half()
 
-        codebook = t2s_model.model.ar_audio_embedding.weight.clone()
-        mute_emb = codebook[self.configs.mute_tokens[self.configs.version]].unsqueeze(0)
-        sim_matrix = F.cosine_similarity(mute_emb.float(), codebook.float(), dim=-1)
-        self.configs.mute_emb_sim_matrix = sim_matrix
+        self._clear_mute_emb_sim_matrix()
 
     def init_vocoder(self, version: str):
         if version == "v3":
@@ -747,6 +761,7 @@ class TTS:
             self.vocoder = self.vocoder.to(device)
         if self.sr_model is not None:
             self.sr_model = self.sr_model.to(device)
+        self._clear_mute_emb_sim_matrix()
 
     def set_ref_audio(self, ref_audio_path: str):
         """
@@ -1352,6 +1367,9 @@ class TTS:
                                 batch_audio_fragment.append(audio_fragment)
 
                 else:
+                    mute_emb_sim_matrix = None
+                    if not fixed_length_chunk:
+                        mute_emb_sim_matrix = self._ensure_mute_emb_sim_matrix()
                     # refer_audio_spec: torch.Tensor = [
                     #     item.to(dtype=self.precision, device=self.configs.device)
                     #     for item in self.prompt_cache["refer_spec"]
@@ -1369,7 +1387,7 @@ class TTS:
                         repetition_penalty=repetition_penalty,
                         streaming_mode=True,
                         chunk_length=min_chunk_length,
-                        mute_emb_sim_matrix=self.configs.mute_emb_sim_matrix if not fixed_length_chunk else None,
+                        mute_emb_sim_matrix=mute_emb_sim_matrix,
                         chunk_split_thershold=chunk_split_thershold,
                     )
                     t4 = time.perf_counter()

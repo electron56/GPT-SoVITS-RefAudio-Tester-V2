@@ -11,27 +11,53 @@ import typing as tp
 import torch
 
 
+def _dist_module():
+    return getattr(torch, "distributed", None)
+
+
+def _dist_attr(name: str):
+    dist = _dist_module()
+    return getattr(dist, name, None) if dist is not None else None
+
+
+def _dist_is_initialized() -> bool:
+    is_initialized = _dist_attr("is_initialized")
+    if not callable(is_initialized):
+        return False
+    try:
+        return bool(is_initialized())
+    except Exception:
+        return False
+
+
 def rank():
-    if torch.distributed.is_initialized():
-        return torch.distributed.get_rank()
-    else:
-        return 0
+    get_rank = _dist_attr("get_rank")
+    if _dist_is_initialized() and callable(get_rank):
+        return get_rank()
+    return 0
 
 
 def world_size():
-    if torch.distributed.is_initialized():
-        return torch.distributed.get_world_size()
-    else:
-        return 1
+    get_world_size = _dist_attr("get_world_size")
+    if _dist_is_initialized() and callable(get_world_size):
+        return get_world_size()
+    return 1
 
 
 def is_distributed():
-    return world_size() > 1
+    return _dist_is_initialized() and world_size() > 1
 
 
-def all_reduce(tensor: torch.Tensor, op=torch.distributed.ReduceOp.SUM):
-    if is_distributed():
-        return torch.distributed.all_reduce(tensor, op)
+def all_reduce(tensor: torch.Tensor, op=None, async_op: bool = False):
+    reduce = _dist_attr("all_reduce")
+    if not is_distributed() or not callable(reduce):
+        return None
+    if op is None:
+        reduce_op = _dist_attr("ReduceOp")
+        op = getattr(reduce_op, "SUM", None) if reduce_op is not None else None
+    if op is None:
+        return None
+    return reduce(tensor, op=op, async_op=async_op)
 
 
 def _is_complex_or_float(tensor):
@@ -60,11 +86,14 @@ def broadcast_tensors(tensors: tp.Iterable[torch.Tensor], src: int = 0):
     """
     if not is_distributed():
         return
+    broadcast = _dist_attr("broadcast")
+    if not callable(broadcast):
+        return
     tensors = [tensor for tensor in tensors if _is_complex_or_float(tensor)]
     _check_number_of_params(tensors)
     handles = []
     for tensor in tensors:
-        handle = torch.distributed.broadcast(tensor.data, src=src, async_op=True)
+        handle = broadcast(tensor.data, src=src, async_op=True)
         handles.append(handle)
     for handle in handles:
         handle.wait()
@@ -76,18 +105,27 @@ def sync_buffer(buffers, average=True):
     """
     if not is_distributed():
         return
+    broadcast = _dist_attr("broadcast")
     handles = []
     for buffer in buffers:
         if torch.is_floating_point(buffer.data):
             if average:
-                handle = torch.distributed.all_reduce(buffer.data, op=torch.distributed.ReduceOp.SUM, async_op=True)
+                reduce_op = _dist_attr("ReduceOp")
+                sum_op = getattr(reduce_op, "SUM", None) if reduce_op is not None else None
+                if sum_op is None:
+                    continue
+                handle = all_reduce(buffer.data, op=sum_op, async_op=True)
             else:
-                handle = torch.distributed.broadcast(buffer.data, src=0, async_op=True)
+                if not callable(broadcast):
+                    continue
+                handle = broadcast(buffer.data, src=0, async_op=True)
+            if handle is None:
+                continue
             handles.append((buffer, handle))
     for buffer, handle in handles:
         handle.wait()
         if average:
-            buffer.data /= world_size
+            buffer.data /= world_size()
 
 
 def sync_grad(params):
@@ -98,10 +136,16 @@ def sync_grad(params):
     """
     if not is_distributed():
         return
+    reduce_op = _dist_attr("ReduceOp")
+    sum_op = getattr(reduce_op, "SUM", None) if reduce_op is not None else None
+    if sum_op is None:
+        return
     handles = []
     for p in params:
         if p.grad is not None:
-            handle = torch.distributed.all_reduce(p.grad.data, op=torch.distributed.ReduceOp.SUM, async_op=True)
+            handle = all_reduce(p.grad.data, op=sum_op, async_op=True)
+            if handle is None:
+                continue
             handles.append((p, handle))
     for p, handle in handles:
         handle.wait()

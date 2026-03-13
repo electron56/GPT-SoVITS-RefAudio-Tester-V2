@@ -929,12 +929,16 @@ class Text2SemanticDecoder(nn.Module):
 
 
             if streaming_mode and (mute_emb_sim_matrix is not None) and (token_counter >= chunk_length+check_token_num):
-                score = mute_emb_sim_matrix[y[0, curr_ptr:]] - chunk_split_thershold
+                token_window = y[0, curr_ptr:]
+                if mute_emb_sim_matrix.device != token_window.device:
+                    token_window = token_window.detach().cpu()
+                score = mute_emb_sim_matrix[token_window] - chunk_split_thershold
+                score = score.float()
                 score[score<0]=-1
-                score[:-1]=score[:-1]+score[1:] ##考虑连续两个token
-                argmax_idx = score.argmax()
+                score[:-1]=score[:-1]+score[1:] ##??????token
+                argmax_idx = int(score.argmax().item())
 
-                if score[argmax_idx]>=0 and argmax_idx+1>=chunk_length: 
+                if float(score[argmax_idx].item())>=0 and argmax_idx+1>=chunk_length: 
                     print(f"\n\ncurr_ptr:{curr_ptr}")
                     yield y[:, curr_ptr:], False
                     token_counter -= argmax_idx+1

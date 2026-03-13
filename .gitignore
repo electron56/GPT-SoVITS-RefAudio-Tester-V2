@@ -1,6 +1,7 @@
 ex/*
 ref_mp3/*
 *.list
+.venv*
 
 # IDE/editor settings
 .idea/

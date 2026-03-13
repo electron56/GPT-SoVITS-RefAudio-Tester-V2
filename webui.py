@@ -1722,6 +1722,18 @@ if __name__ == "__main__":
         default=False,
         help="Randomize the order of reference audios.",
     )
+    parser.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda"],
+        default="auto",
+        help="Runtime device selection. Use auto for automatic detection.",
+    )
+    parser.add_argument(
+        "--precision",
+        choices=["auto", "fp32", "fp16"],
+        default="auto",
+        help="Runtime precision selection. Use auto for default behavior.",
+    )
     args = parser.parse_args()
 
     g_ref_audio_widget_list = []
@@ -1749,7 +1761,19 @@ if __name__ == "__main__":
         print(t("no_model_found"))
         raise SystemExit(1)
 
-    current_version = inference_main.initialize(g_GPT_names[0], g_SoVITS_names[0])
+    runtime_device = None if args.device == "auto" else args.device
+    runtime_is_half = None
+    if args.precision == "fp16":
+        runtime_is_half = True
+    elif args.precision == "fp32":
+        runtime_is_half = False
+
+    current_version = inference_main.initialize(
+        g_GPT_names[0],
+        g_SoVITS_names[0],
+        device=runtime_device,
+        is_half=runtime_is_half,
+    )
     language_choices = inference_main.get_supported_languages()
     default_language = language_choices[0] if language_choices else inference_main.get_default_language()
     version_text = t("version_text", version=current_version)

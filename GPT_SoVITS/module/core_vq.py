@@ -37,9 +37,8 @@ from einops import rearrange, repeat
 import torch
 from torch import nn
 import torch.nn.functional as F
-import torch.distributed as dist
 
-from module.distrib import broadcast_tensors, is_distributed
+from module.distrib import all_reduce, broadcast_tensors, is_distributed, rank
 from module.ddp_utils import SyncFunction
 from tqdm import tqdm
 
@@ -158,17 +157,16 @@ class EuclideanCodebook(nn.Module):
         if self.inited:
             return
 
-        if dist.is_available() and dist.is_initialized():
+        if is_distributed():
             # [B * T * world_size, D]
             data = SyncFunction.apply(data)
 
-        if dist.get_rank() == 0:
+        if not is_distributed() or rank() == 0:
             embed, cluster_size = kmeans(data, self.codebook_size, self.kmeans_iters)
         else:
             embed = torch.empty_like(self.embed)
             cluster_size = torch.empty_like(self.cluster_size)
-        dist.broadcast(embed, src=0)
-        dist.broadcast(cluster_size, src=0)
+        broadcast_tensors([embed, cluster_size])
 
         self.embed.data.copy_(embed)
         self.embed_avg.data.copy_(embed.clone())
@@ -193,11 +191,11 @@ class EuclideanCodebook(nn.Module):
             # [B * T * world_size, D]
             batch_samples = SyncFunction.apply(batch_samples)
 
-        if dist.get_rank() == 0:
+        if not is_distributed() or rank() == 0:
             new_embeds = sample_vectors(batch_samples, expired_codes.sum())
         else:
             new_embeds = torch.zeros(expired_codes.sum(), self.embed.size(1), device=self.embed.device)
-        dist.broadcast(new_embeds, src=0)
+        broadcast_tensors([new_embeds])
         self.embed.data[expired_codes] = new_embeds
         broadcast_tensors(self.buffers())
 
@@ -248,8 +246,8 @@ class EuclideanCodebook(nn.Module):
             embed_onehot_sum = embed_onehot.sum(0)  # [cb-size,]
             embed_sum = x.t() @ embed_onehot  # [D, cb-size]
             if is_distributed():
-                dist.all_reduce(embed_onehot_sum)
-                dist.all_reduce(embed_sum)
+                all_reduce(embed_onehot_sum)
+                all_reduce(embed_sum)
             # Update ema cluster count N_i^t, eq. (6) in vqvae paper
             self.cluster_size.data.mul_(self.decay).add_(embed_onehot_sum, alpha=1 - self.decay)
             # Update ema embed: eq. (7) in vqvae paper
