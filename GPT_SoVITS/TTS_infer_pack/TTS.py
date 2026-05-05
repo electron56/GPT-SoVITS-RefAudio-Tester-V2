@@ -6,35 +6,49 @@ import sys
 import time
 import traceback
 from copy import deepcopy
-
-import torchaudio
-from tqdm import tqdm
-
-now_dir = os.getcwd()
-sys.path.append(now_dir)
-import os
 from typing import List, Tuple, Union
 
-import ffmpeg
-import librosa
-import numpy as np
-import torch
-import torch.nn.functional as F
-import yaml
-from AR.models.t2s_lightning_module import Text2SemanticLightningModule
-from BigVGAN.bigvgan import BigVGAN
-from feature_extractor.cnhubert import CNHubert
-from module.mel_processing import mel_spectrogram_torch, spectrogram_torch
-from module.models import SynthesizerTrn, SynthesizerTrnV3, Generator
-from peft import LoraConfig, get_peft_model
-from process_ckpt import get_sovits_version_from_path_fast, load_sovits_new
-from transformers import AutoModelForMaskedLM, AutoTokenizer
+THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR = os.path.dirname(THIS_DIR)
+now_dir = os.getcwd()
+for _path in (now_dir, PARENT_DIR):
+    if _path not in sys.path:
+        sys.path.append(_path)
 
-from tools.audio_sr import AP_BWE
-from tools.i18n.i18n import I18nAuto, scan_language_list
-from TTS_infer_pack.text_segmentation_method import splits
-from TTS_infer_pack.TextPreprocessor import TextPreprocessor
-from sv import SV
+try:
+    from GPT_SoVITS.startup_timing import timed_stage, timing_point
+except ModuleNotFoundError:
+    from startup_timing import timed_stage, timing_point
+
+timing_point("tts.import", "module import start")
+with timed_stage("tts.import", "import audio stack"):
+    import torchaudio
+    from tqdm import tqdm
+    import ffmpeg
+    import librosa
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
+    import yaml
+with timed_stage("tts.import", "import Text2Semantic stack"):
+    from AR.models.t2s_lightning_module import Text2SemanticLightningModule
+with timed_stage("tts.import", "import VITS and vocoder stack"):
+    from BigVGAN.bigvgan import BigVGAN
+    from module.mel_processing import mel_spectrogram_torch, spectrogram_torch
+    from module.models import SynthesizerTrn, SynthesizerTrnV3, Generator
+with timed_stage("tts.import", "import feature extractors"):
+    from feature_extractor.cnhubert import CNHubert
+    from sv import SV
+with timed_stage("tts.import", "import adaptation and config deps"):
+    from peft import LoraConfig, get_peft_model
+    from process_ckpt import get_sovits_version_from_path_fast, load_sovits_new
+    from transformers import AutoModelForMaskedLM, AutoTokenizer
+with timed_stage("tts.import", "import pipeline helpers"):
+    from tools.audio_sr import AP_BWE
+    from tools.i18n.i18n import I18nAuto, scan_language_list
+    from TTS_infer_pack.text_segmentation_method import splits
+    from TTS_infer_pack.TextPreprocessor import TextPreprocessor
+timing_point("tts.import", "module import ready")
 
 resample_transform_dict = {}
 
@@ -420,258 +434,296 @@ class TTS_Config:
 
 class TTS:
     def __init__(self, configs: Union[dict, str, TTS_Config]):
-        if isinstance(configs, TTS_Config):
-            self.configs = configs
-        else:
-            self.configs: TTS_Config = TTS_Config(configs)
+        with timed_stage("tts", "TTS.__init__"):
+            if isinstance(configs, TTS_Config):
+                self.configs = configs
+            else:
+                self.configs: TTS_Config = TTS_Config(configs)
 
-        self.t2s_model: Text2SemanticLightningModule = None
-        self.vits_model: Union[SynthesizerTrn, SynthesizerTrnV3] = None
-        self.bert_tokenizer: AutoTokenizer = None
-        self.bert_model: AutoModelForMaskedLM = None
-        self.cnhuhbert_model: CNHubert = None
-        self.vocoder = None
-        self.sr_model: AP_BWE = None
-        self.sv_model = None
-        self.sr_model_not_exist: bool = False
+            self.t2s_model: Text2SemanticLightningModule = None
+            self.vits_model: Union[SynthesizerTrn, SynthesizerTrnV3] = None
+            self.bert_tokenizer: AutoTokenizer = None
+            self.bert_model: AutoModelForMaskedLM = None
+            self.cnhuhbert_model: CNHubert = None
+            self.vocoder = None
+            self.sr_model: AP_BWE = None
+            self.sv_model = None
+            self.sr_model_not_exist: bool = False
 
-        self.vocoder_configs: dict = {
-            "sr": None,
-            "T_ref": None,
-            "T_chunk": None,
-            "upsample_rate": None,
-            "overlapped_len": None,
-        }
+            self.vocoder_configs: dict = {
+                "sr": None,
+                "T_ref": None,
+                "T_chunk": None,
+                "upsample_rate": None,
+                "overlapped_len": None,
+            }
 
-        self._init_models()
+            with timed_stage("tts", "initialize core models"):
+                self._init_models()
 
-        self.text_preprocessor: TextPreprocessor = TextPreprocessor(
-            self.bert_model, self.bert_tokenizer, self.configs.device
+            with timed_stage("tts", "create TextPreprocessor"):
+                self.text_preprocessor: TextPreprocessor = TextPreprocessor(
+                    self.bert_model, self.bert_tokenizer, self.configs.device
+                )
+
+            self.prompt_cache: dict = {
+                "ref_audio_path": None,
+                "prompt_semantic": None,
+                "refer_spec": [],
+                "prompt_text": None,
+                "prompt_lang": None,
+                "phones": None,
+                "bert_features": None,
+                "norm_text": None,
+                "aux_ref_audio_paths": [],
+            }
+
+            self.stop_flag: bool = False
+            self.precision: torch.dtype = torch.float16 if self.configs.is_half else torch.float32
+
+        timing_point(
+            "tts",
+            f"TTS ready version={self.configs.version} device={self.configs.device} is_half={self.configs.is_half}",
         )
-
-        self.prompt_cache: dict = {
-            "ref_audio_path": None,
-            "prompt_semantic": None,
-            "refer_spec": [],
-            "prompt_text": None,
-            "prompt_lang": None,
-            "phones": None,
-            "bert_features": None,
-            "norm_text": None,
-            "aux_ref_audio_paths": [],
-        }
-
-        self.stop_flag: bool = False
-        self.precision: torch.dtype = torch.float16 if self.configs.is_half else torch.float32
 
     def _init_models(
         self,
     ):
-        self.init_t2s_weights(self.configs.t2s_weights_path)
-        self.init_vits_weights(self.configs.vits_weights_path)
-        self.init_bert_weights(self.configs.bert_base_path)
-        self.init_cnhuhbert_weights(self.configs.cnhuhbert_base_path)
+        with timed_stage("tts", "load Text2Semantic weights"):
+            self.init_t2s_weights(self.configs.t2s_weights_path)
+        with timed_stage("tts", "load VITS weights"):
+            self.init_vits_weights(self.configs.vits_weights_path)
+        with timed_stage("tts", "load BERT weights"):
+            self.init_bert_weights(self.configs.bert_base_path)
+        with timed_stage("tts", "load CNHuBERT weights"):
+            self.init_cnhuhbert_weights(self.configs.cnhuhbert_base_path)
         # self.enable_half_precision(self.configs.is_half)
 
     def init_cnhuhbert_weights(self, base_path: str):
         print(f"Loading CNHuBERT weights from {base_path}")
-        self.cnhuhbert_model = CNHubert(base_path)
-        self.cnhuhbert_model = self.cnhuhbert_model.eval()
-        self.cnhuhbert_model = self.cnhuhbert_model.to(self.configs.device)
-        if self.configs.is_half and str(self.configs.device) != "cpu":
-            self.cnhuhbert_model = self.cnhuhbert_model.half()
+        with timed_stage("tts", "init CNHuBERT weights"):
+            with timed_stage("tts", "cnhuhbert model load"):
+                self.cnhuhbert_model = CNHubert(base_path)
+            with timed_stage("tts", "cnhuhbert move/eval/half"):
+                self.cnhuhbert_model = self.cnhuhbert_model.eval()
+                self.cnhuhbert_model = self.cnhuhbert_model.to(self.configs.device)
+                if self.configs.is_half and str(self.configs.device) != "cpu":
+                    self.cnhuhbert_model = self.cnhuhbert_model.half()
 
     def init_bert_weights(self, base_path: str):
         print(f"Loading BERT weights from {base_path}")
-        self.bert_tokenizer = AutoTokenizer.from_pretrained(base_path)
-        self.bert_model = AutoModelForMaskedLM.from_pretrained(base_path)
-        self.bert_model = self.bert_model.eval()
-        self.bert_model = self.bert_model.to(self.configs.device)
-        if self.configs.is_half and str(self.configs.device) != "cpu":
-            self.bert_model = self.bert_model.half()
+        with timed_stage("tts", "init BERT weights"):
+            with timed_stage("tts", "bert tokenizer load"):
+                self.bert_tokenizer = AutoTokenizer.from_pretrained(base_path)
+            with timed_stage("tts", "bert model load"):
+                self.bert_model = AutoModelForMaskedLM.from_pretrained(base_path)
+            with timed_stage("tts", "bert move/eval/half"):
+                self.bert_model = self.bert_model.eval()
+                self.bert_model = self.bert_model.to(self.configs.device)
+                if self.configs.is_half and str(self.configs.device) != "cpu":
+                    self.bert_model = self.bert_model.half()
 
     def init_vits_weights(self, weights_path: str):
-        self.configs.vits_weights_path = weights_path
-        version, model_version, if_lora_v3 = get_sovits_version_from_path_fast(weights_path)
-        if "Pro" in model_version:
-            self.init_sv_model()
-        path_sovits = self.configs.default_configs[model_version]["vits_weights_path"]
+        with timed_stage("tts", "init VITS weights"):
+            self.configs.vits_weights_path = weights_path
+            with timed_stage("tts", "vits detect version and paths"):
+                _, model_version, if_lora_v3 = get_sovits_version_from_path_fast(weights_path)
+                if "Pro" in model_version:
+                    with timed_stage("tts", "vits init speaker verification model"):
+                        self.init_sv_model()
+                path_sovits = self.configs.default_configs[model_version]["vits_weights_path"]
 
-        if if_lora_v3 == True and os.path.exists(path_sovits) == False:
-            info = path_sovits + i18n("SoVITS %s 底模缺失，无法加载相应 LoRA 权重" % model_version)
-            raise FileExistsError(info)
+                if if_lora_v3 and os.path.exists(path_sovits) is False:
+                    raise FileExistsError(f"Missing base SoVITS weights for LoRA load: {path_sovits}")
 
-        # dict_s2 = torch.load(weights_path, map_location=self.configs.device,weights_only=False)
-        dict_s2 = load_sovits_new(weights_path)
-        hps = dict_s2["config"]
-        hps["model"]["semantic_frame_rate"] = "25hz"
-        if "enc_p.text_embedding.weight" not in dict_s2["weight"]:
-            hps["model"]["version"] = "v2"  # v3model,v2sybomls
-        elif dict_s2["weight"]["enc_p.text_embedding.weight"].shape[0] == 322:
-            hps["model"]["version"] = "v1"
-        else:
-            hps["model"]["version"] = "v2"
-        version = hps["model"]["version"]
-        v3v4set = {"v3", "v4"}
-        if model_version not in v3v4set:
-            if "Pro" not in model_version:
-                model_version = version
+            with timed_stage("tts", "vits checkpoint load"):
+                dict_s2 = load_sovits_new(weights_path)
+
+            with timed_stage("tts", "vits build model"):
+                hps = dict_s2["config"]
+                hps["model"]["semantic_frame_rate"] = "25hz"
+                if "enc_p.text_embedding.weight" not in dict_s2["weight"]:
+                    hps["model"]["version"] = "v2"
+                elif dict_s2["weight"]["enc_p.text_embedding.weight"].shape[0] == 322:
+                    hps["model"]["version"] = "v1"
+                else:
+                    hps["model"]["version"] = "v2"
+                version = hps["model"]["version"]
+                v3v4set = {"v3", "v4"}
+                if model_version not in v3v4set:
+                    if "Pro" not in model_version:
+                        model_version = version
+                    else:
+                        hps["model"]["version"] = model_version
+                else:
+                    hps["model"]["version"] = model_version
+
+                self.configs.filter_length = hps["data"]["filter_length"]
+                self.configs.segment_size = hps["train"]["segment_size"]
+                self.configs.sampling_rate = hps["data"]["sampling_rate"]
+                self.configs.hop_length = hps["data"]["hop_length"]
+                self.configs.win_length = hps["data"]["win_length"]
+                self.configs.n_speakers = hps["data"]["n_speakers"]
+                self.configs.semantic_frame_rate = hps["model"]["semantic_frame_rate"]
+                kwargs = hps["model"]
+
+                self.configs.update_version(model_version)
+
+                if model_version not in v3v4set:
+                    vits_model = SynthesizerTrn(
+                        self.configs.filter_length // 2 + 1,
+                        self.configs.segment_size // self.configs.hop_length,
+                        n_speakers=self.configs.n_speakers,
+                        **kwargs,
+                    )
+                    self.configs.use_vocoder = False
+                else:
+                    kwargs["version"] = model_version
+                    vits_model = SynthesizerTrnV3(
+                        self.configs.filter_length // 2 + 1,
+                        self.configs.segment_size // self.configs.hop_length,
+                        n_speakers=self.configs.n_speakers,
+                        **kwargs,
+                    )
+                    self.configs.use_vocoder = True
+                    with timed_stage("tts", "vits init vocoder"):
+                        self.init_vocoder(model_version)
+                    if "pretrained" not in weights_path and hasattr(vits_model, "enc_q"):
+                        del vits_model.enc_q
+
+                self.is_v2pro = model_version in {"v2Pro", "v2ProPlus"}
+
+            if if_lora_v3 is False:
+                with timed_stage("tts", "vits load state dict"):
+                    load_info = vits_model.load_state_dict(dict_s2["weight"], strict=False)
+                print(f"Loading VITS weights from {weights_path}. {load_info}")
             else:
-                hps["model"]["version"] = model_version
-        else:
-            hps["model"]["version"] = model_version
+                with timed_stage("tts", "vits load pretrained state dict"):
+                    pretrained_weights = load_sovits_new(path_sovits)["weight"]
+                    pretrained_load_info = vits_model.load_state_dict(pretrained_weights, strict=False)
+                print(f"Loading VITS pretrained weights from {weights_path}. {pretrained_load_info}")
 
-        self.configs.filter_length = hps["data"]["filter_length"]
-        self.configs.segment_size = hps["train"]["segment_size"]
-        self.configs.sampling_rate = hps["data"]["sampling_rate"]
-        self.configs.hop_length = hps["data"]["hop_length"]
-        self.configs.win_length = hps["data"]["win_length"]
-        self.configs.n_speakers = hps["data"]["n_speakers"]
-        self.configs.semantic_frame_rate = hps["model"]["semantic_frame_rate"]
-        kwargs = hps["model"]
-        # print(f"self.configs.sampling_rate:{self.configs.sampling_rate}")
+                lora_rank = dict_s2["lora_rank"]
+                with timed_stage("tts", "vits load LoRA and merge"):
+                    lora_config = LoraConfig(
+                        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+                        r=lora_rank,
+                        lora_alpha=lora_rank,
+                        init_lora_weights=True,
+                    )
+                    vits_model.cfm = get_peft_model(vits_model.cfm, lora_config)
+                    lora_load_info = vits_model.load_state_dict(dict_s2["weight"], strict=False)
+                    vits_model.cfm = vits_model.cfm.merge_and_unload()
+                print(f"Loading LoRA weights from {weights_path}. {lora_load_info}")
 
-        self.configs.update_version(model_version)
+            with timed_stage("tts", "vits move/eval/half/save"):
+                vits_model = vits_model.to(self.configs.device)
+                vits_model = vits_model.eval()
 
-        # print(f"model_version:{model_version}")
-        # print(f'hps["model"]["version"]:{hps["model"]["version"]}')
-        if model_version not in v3v4set:
-            vits_model = SynthesizerTrn(
-                self.configs.filter_length // 2 + 1,
-                self.configs.segment_size // self.configs.hop_length,
-                n_speakers=self.configs.n_speakers,
-                **kwargs,
-            )
-            self.configs.use_vocoder = False
-        else:
-            kwargs["version"] = model_version
-            vits_model = SynthesizerTrnV3(
-                self.configs.filter_length // 2 + 1,
-                self.configs.segment_size // self.configs.hop_length,
-                n_speakers=self.configs.n_speakers,
-                **kwargs,
-            )
-            self.configs.use_vocoder = True
-            self.init_vocoder(model_version)
-            if "pretrained" not in weights_path and hasattr(vits_model, "enc_q"):
-                del vits_model.enc_q
+                self.vits_model = vits_model
+                if self.configs.is_half and str(self.configs.device) != "cpu":
+                    self.vits_model = self.vits_model.half()
 
-        self.is_v2pro = model_version in {"v2Pro", "v2ProPlus"}
-
-        if if_lora_v3 == False:
-            print(
-                f"Loading VITS weights from {weights_path}. {vits_model.load_state_dict(dict_s2['weight'], strict=False)}"
-            )
-        else:
-            print(
-                f"Loading VITS pretrained weights from {weights_path}. {vits_model.load_state_dict(load_sovits_new(path_sovits)['weight'], strict=False)}"
-            )
-            lora_rank = dict_s2["lora_rank"]
-            lora_config = LoraConfig(
-                target_modules=["to_k", "to_q", "to_v", "to_out.0"],
-                r=lora_rank,
-                lora_alpha=lora_rank,
-                init_lora_weights=True,
-            )
-            vits_model.cfm = get_peft_model(vits_model.cfm, lora_config)
-            print(
-                f"Loading LoRA weights from {weights_path}. {vits_model.load_state_dict(dict_s2['weight'], strict=False)}"
-            )
-
-            vits_model.cfm = vits_model.cfm.merge_and_unload()
-
-        vits_model = vits_model.to(self.configs.device)
-        vits_model = vits_model.eval()
-
-        self.vits_model = vits_model
-        if self.configs.is_half and str(self.configs.device) != "cpu":
-            self.vits_model = self.vits_model.half()
-
-        self.configs.save_configs()
-
-
+                self.configs.save_configs()
 
     def init_t2s_weights(self, weights_path: str):
         print(f"Loading Text2Semantic weights from {weights_path}")
-        self.configs.t2s_weights_path = weights_path
-        self.configs.save_configs()
-        self.configs.hz = 50
-        dict_s1 = torch.load(weights_path, map_location=self.configs.device, weights_only=False)
-        config = dict_s1["config"]
-        self.configs.max_sec = config["data"]["max_sec"]
-        t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
-        t2s_model.load_state_dict(dict_s1["weight"])
-        t2s_model = t2s_model.to(self.configs.device)
-        t2s_model = t2s_model.eval()
-        self.t2s_model = t2s_model
-        if self.configs.is_half and str(self.configs.device) != "cpu":
-            self.t2s_model = self.t2s_model.half()
+        with timed_stage("tts", "init Text2Semantic weights"):
+            self.configs.t2s_weights_path = weights_path
+            self.configs.save_configs()
+            self.configs.hz = 50
 
-        codebook = t2s_model.model.ar_audio_embedding.weight.clone()
-        mute_emb = codebook[self.configs.mute_tokens[self.configs.version]].unsqueeze(0)
-        sim_matrix = F.cosine_similarity(mute_emb.float(), codebook.float(), dim=-1)
-        self.configs.mute_emb_sim_matrix = sim_matrix
+            with timed_stage("tts", "t2s checkpoint load"):
+                dict_s1 = torch.load(weights_path, map_location=self.configs.device, weights_only=False)
+
+            config = dict_s1["config"]
+            self.configs.max_sec = config["data"]["max_sec"]
+            with timed_stage("tts", "t2s build model and load state dict"):
+                t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
+                t2s_model.load_state_dict(dict_s1["weight"])
+
+            with timed_stage("tts", "t2s move/eval/half"):
+                t2s_model = t2s_model.to(self.configs.device)
+                t2s_model = t2s_model.eval()
+                self.t2s_model = t2s_model
+                if self.configs.is_half and str(self.configs.device) != "cpu":
+                    self.t2s_model = self.t2s_model.half()
+
+            with timed_stage("tts", "t2s mute embedding prep"):
+                codebook = t2s_model.model.ar_audio_embedding.weight.clone()
+                mute_emb = codebook[self.configs.mute_tokens[self.configs.version]].unsqueeze(0)
+                sim_matrix = F.cosine_similarity(mute_emb.float(), codebook.float(), dim=-1)
+                self.configs.mute_emb_sim_matrix = sim_matrix
 
     def init_vocoder(self, version: str):
-        if version == "v3":
-            if self.vocoder is not None and self.vocoder.__class__.__name__ == "BigVGAN":
+        with timed_stage("tts", "init vocoder"):
+            if version == "v3":
+                if self.vocoder is not None and self.vocoder.__class__.__name__ == "BigVGAN":
+                    return
+                if self.vocoder is not None:
+                    self.vocoder.cpu()
+                    del self.vocoder
+                    self.empty_cache()
+
+                with timed_stage("tts", "load BigVGAN pretrained"):
+                    self.vocoder = BigVGAN.from_pretrained(
+                        "%s/GPT_SoVITS/pretrained_models/models--nvidia--bigvgan_v2_24khz_100band_256x" % (now_dir,),
+                        use_cuda_kernel=False,
+                    )
+                with timed_stage("tts", "remove vocoder weight norm"):
+                    self.vocoder.remove_weight_norm()
+
+                self.vocoder_configs["sr"] = 24000
+                self.vocoder_configs["T_ref"] = 468
+                self.vocoder_configs["T_chunk"] = 934
+                self.vocoder_configs["upsample_rate"] = 256
+                self.vocoder_configs["overlapped_len"] = 12
+
+            elif version == "v4":
+                if self.vocoder is not None and self.vocoder.__class__.__name__ == "Generator":
+                    return
+                if self.vocoder is not None:
+                    self.vocoder.cpu()
+                    del self.vocoder
+                    self.empty_cache()
+
+                with timed_stage("tts", "build v4 vocoder"):
+                    self.vocoder = Generator(
+                        initial_channel=100,
+                        resblock="1",
+                        resblock_kernel_sizes=[3, 7, 11],
+                        resblock_dilation_sizes=[[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+                        upsample_rates=[10, 6, 2, 2, 2],
+                        upsample_initial_channel=512,
+                        upsample_kernel_sizes=[20, 12, 4, 4, 4],
+                        gin_channels=0,
+                        is_bias=True,
+                    )
+                with timed_stage("tts", "remove vocoder weight norm"):
+                    self.vocoder.remove_weight_norm()
+                with timed_stage("tts", "load v4 vocoder weights"):
+                    state_dict_g = torch.load(
+                        "%s/GPT_SoVITS/pretrained_models/gsv-v4-pretrained/vocoder.pth" % (now_dir,),
+                        map_location="cpu",
+                        weights_only=False,
+                    )
+                    vocoder_load_info = self.vocoder.load_state_dict(state_dict_g)
+                print("loading vocoder", vocoder_load_info)
+
+                self.vocoder_configs["sr"] = 48000
+                self.vocoder_configs["T_ref"] = 500
+                self.vocoder_configs["T_chunk"] = 1000
+                self.vocoder_configs["upsample_rate"] = 480
+                self.vocoder_configs["overlapped_len"] = 12
+            else:
                 return
-            if self.vocoder is not None:
-                self.vocoder.cpu()
-                del self.vocoder
-                self.empty_cache()
 
-            self.vocoder = BigVGAN.from_pretrained(
-                "%s/GPT_SoVITS/pretrained_models/models--nvidia--bigvgan_v2_24khz_100band_256x" % (now_dir,),
-                use_cuda_kernel=False,
-            )  # if True, RuntimeError: Ninja is required to load C++ extensions
-            # remove weight norm in the model and set to eval mode
-            self.vocoder.remove_weight_norm()
-
-            self.vocoder_configs["sr"] = 24000
-            self.vocoder_configs["T_ref"] = 468
-            self.vocoder_configs["T_chunk"] = 934
-            self.vocoder_configs["upsample_rate"] = 256
-            self.vocoder_configs["overlapped_len"] = 12
-
-        elif version == "v4":
-            if self.vocoder is not None and self.vocoder.__class__.__name__ == "Generator":
-                return
-            if self.vocoder is not None:
-                self.vocoder.cpu()
-                del self.vocoder
-                self.empty_cache()
-
-            self.vocoder = Generator(
-                initial_channel=100,
-                resblock="1",
-                resblock_kernel_sizes=[3, 7, 11],
-                resblock_dilation_sizes=[[1, 3, 5], [1, 3, 5], [1, 3, 5]],
-                upsample_rates=[10, 6, 2, 2, 2],
-                upsample_initial_channel=512,
-                upsample_kernel_sizes=[20, 12, 4, 4, 4],
-                gin_channels=0,
-                is_bias=True,
-            )
-            self.vocoder.remove_weight_norm()
-            state_dict_g = torch.load(
-                "%s/GPT_SoVITS/pretrained_models/gsv-v4-pretrained/vocoder.pth" % (now_dir,),
-                map_location="cpu",
-                weights_only=False,
-            )
-            print("loading vocoder", self.vocoder.load_state_dict(state_dict_g))
-
-            self.vocoder_configs["sr"] = 48000
-            self.vocoder_configs["T_ref"] = 500
-            self.vocoder_configs["T_chunk"] = 1000
-            self.vocoder_configs["upsample_rate"] = 480
-            self.vocoder_configs["overlapped_len"] = 12
-
-        self.vocoder = self.vocoder.eval()
-        if self.configs.is_half == True:
-            self.vocoder = self.vocoder.half().to(self.configs.device)
-        else:
-            self.vocoder = self.vocoder.to(self.configs.device)
+            with timed_stage("tts", "vocoder move/eval/half"):
+                self.vocoder = self.vocoder.eval()
+                if self.configs.is_half == True:
+                    self.vocoder = self.vocoder.half().to(self.configs.device)
+                else:
+                    self.vocoder = self.vocoder.to(self.configs.device)
 
     def init_sr_model(self):
         if self.sr_model is not None:
@@ -686,7 +738,8 @@ class TTS:
     def init_sv_model(self):
         if self.sv_model is not None:
             return
-        self.sv_model = SV(self.configs.device, self.configs.is_half)
+        with timed_stage("tts", "init speaker verification model"):
+            self.sv_model = SV(self.configs.device, self.configs.is_half)
 
     def enable_half_precision(self, enable: bool = True, save: bool = True):
         """

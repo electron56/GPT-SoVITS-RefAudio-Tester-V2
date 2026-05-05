@@ -4,16 +4,25 @@ import re
 import sys
 from typing import Dict, Generator, List, Optional, Tuple, Union
 
-import torch
-
 NOW_DIR = os.getcwd()
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 for _path in (NOW_DIR, os.path.join(NOW_DIR, "GPT_SoVITS"), THIS_DIR):
     if _path not in sys.path:
         sys.path.append(_path)
 
-from process_ckpt import get_sovits_version_from_path_fast
-from TTS_infer_pack.TTS import NO_PROMPT_ERROR, TTS, TTS_Config
+try:
+    from GPT_SoVITS.startup_timing import timed_stage, timing_point
+except ModuleNotFoundError:
+    from startup_timing import timed_stage, timing_point
+
+timing_point("inference_main", "module import start")
+with timed_stage("inference_main", "import torch"):
+    import torch
+with timed_stage("inference_main", "import process_ckpt"):
+    from process_ckpt import get_sovits_version_from_path_fast
+with timed_stage("inference_main", "import TTS_infer_pack.TTS"):
+    from TTS_infer_pack.TTS import NO_PROMPT_ERROR, TTS, TTS_Config
+timing_point("inference_main", "module import ready")
 
 logging.getLogger("markdown_it").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
@@ -169,27 +178,37 @@ def initialize(
 ) -> str:
     global _tts_pipeline
 
-    device = device or _detect_device()
-    if is_half is None:
-        is_half = _detect_half_precision(device)
-    if str(device) == "cpu":
-        is_half = False
+    with timed_stage("inference_main", "initialize pipeline"):
+        with timed_stage("inference_main", "resolve device and precision"):
+            device = device or _detect_device()
+            if is_half is None:
+                is_half = _detect_half_precision(device)
+            if str(device) == "cpu":
+                is_half = False
 
-    tts_config = TTS_Config(TTS_CONFIG_PATH)
-    tts_config.device = device
-    tts_config.is_half = bool(is_half)
+        with timed_stage("inference_main", "build TTS config and apply overrides"):
+            tts_config = TTS_Config(TTS_CONFIG_PATH)
+            tts_config.device = device
+            tts_config.is_half = bool(is_half)
 
-    if gpt_path and os.path.exists(gpt_path):
-        tts_config.t2s_weights_path = gpt_path
-    if sovits_path and os.path.exists(sovits_path):
-        tts_config.vits_weights_path = sovits_path
+            if gpt_path and os.path.exists(gpt_path):
+                tts_config.t2s_weights_path = gpt_path
+            if sovits_path and os.path.exists(sovits_path):
+                tts_config.vits_weights_path = sovits_path
 
-    _tts_pipeline = TTS(tts_config)
-    _state["gpt_path"] = gpt_path or _tts_pipeline.configs.t2s_weights_path
-    _state["sovits_path"] = sovits_path or _tts_pipeline.configs.vits_weights_path
-    _state["version"] = _tts_pipeline.configs.version
-    _state["device"] = str(device)
-    _state["is_half"] = bool(is_half)
+        with timed_stage("inference_main", "construct TTS pipeline"):
+            _tts_pipeline = TTS(tts_config)
+
+        _state["gpt_path"] = gpt_path or _tts_pipeline.configs.t2s_weights_path
+        _state["sovits_path"] = sovits_path or _tts_pipeline.configs.vits_weights_path
+        _state["version"] = _tts_pipeline.configs.version
+        _state["device"] = str(device)
+        _state["is_half"] = bool(is_half)
+
+    timing_point(
+        "inference_main",
+        f"initialize ready version={_tts_pipeline.configs.version} device={device} is_half={bool(is_half)}",
+    )
     return _tts_pipeline.configs.version
 
 
@@ -204,27 +223,33 @@ def _ensure_initialized() -> None:
 
 
 def change_sovits_weights(sovits_path: str) -> str:
-    if not sovits_path or not os.path.exists(sovits_path):
-        raise FileNotFoundError(f"SoVITS model not found: {sovits_path}")
+    with timed_stage("inference_main", "change SoVITS weights"):
+        if not sovits_path or not os.path.exists(sovits_path):
+            raise FileNotFoundError(f"SoVITS model not found: {sovits_path}")
 
-    _ensure_initialized()
-    assert _tts_pipeline is not None
-    _tts_pipeline.init_vits_weights(sovits_path)
+        _ensure_initialized()
+        assert _tts_pipeline is not None
+        _tts_pipeline.init_vits_weights(sovits_path)
 
-    _state["sovits_path"] = sovits_path
-    _state["version"] = _tts_pipeline.configs.version
+        _state["sovits_path"] = sovits_path
+        _state["version"] = _tts_pipeline.configs.version
+
+    timing_point("inference_main", f"change SoVITS ready version={_tts_pipeline.configs.version}")
     return _tts_pipeline.configs.version
 
 
 def change_gpt_weights(gpt_path: str) -> str:
-    if not gpt_path or not os.path.exists(gpt_path):
-        raise FileNotFoundError(f"GPT model not found: {gpt_path}")
+    with timed_stage("inference_main", "change GPT weights"):
+        if not gpt_path or not os.path.exists(gpt_path):
+            raise FileNotFoundError(f"GPT model not found: {gpt_path}")
 
-    _ensure_initialized()
-    assert _tts_pipeline is not None
-    _tts_pipeline.init_t2s_weights(gpt_path)
+        _ensure_initialized()
+        assert _tts_pipeline is not None
+        _tts_pipeline.init_t2s_weights(gpt_path)
 
-    _state["gpt_path"] = gpt_path
+        _state["gpt_path"] = gpt_path
+
+    timing_point("inference_main", "change GPT ready")
     return gpt_path
 
 

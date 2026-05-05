@@ -7,11 +7,19 @@ import re
 import shutil
 from typing import Dict, List, Optional
 
-import gradio as gr
-import librosa
-from tqdm import tqdm
+from GPT_SoVITS.startup_timing import timed_stage, timing_point
 
-from GPT_SoVITS import inference_main
+timing_point("webui", "process start")
+with timed_stage("webui", "cold imports"):
+    with timed_stage("webui", "import gradio"):
+        import gradio as gr
+    with timed_stage("webui", "import librosa"):
+        import librosa
+    with timed_stage("webui", "import tqdm"):
+        from tqdm import tqdm
+    with timed_stage("webui", "import inference_main"):
+        from GPT_SoVITS import inference_main
+timing_point("webui", "cold imports ready")
 
 logging.getLogger("PIL.Image").propagate = False
 
@@ -1429,30 +1437,31 @@ def _build_version_updates(version: str):
 
 
 def on_change_sovits_weights(sovits_path: str, current_text_language: str):
-    try:
-        version = inference_main.change_sovits_weights(sovits_path)
-        language_update = _build_language_update(current_text_language)
-        version_text, sample_steps_update, super_sampling_update = _build_version_updates(version)
-        status = t("status_loaded_sovits", name=os.path.basename(sovits_path))
-        return (
-            language_update,
-            version_text,
-            sample_steps_update,
-            super_sampling_update,
-            status,
-        )
-    except Exception as exc:
-        print(exc)
-        version = inference_main.get_current_model_version()
-        language_update = _build_language_update(current_text_language)
-        version_text, sample_steps_update, super_sampling_update = _build_version_updates(version)
-        return (
-            language_update,
-            version_text,
-            sample_steps_update,
-            super_sampling_update,
-            t("status_failed_sovits", error=exc),
-        )
+    with timed_stage("webui", "ui change SoVITS weights"):
+        try:
+            version = inference_main.change_sovits_weights(sovits_path)
+            language_update = _build_language_update(current_text_language)
+            version_text, sample_steps_update, super_sampling_update = _build_version_updates(version)
+            status = t("status_loaded_sovits", name=os.path.basename(sovits_path))
+            return (
+                language_update,
+                version_text,
+                sample_steps_update,
+                super_sampling_update,
+                status,
+            )
+        except Exception as exc:
+            print(exc)
+            version = inference_main.get_current_model_version()
+            language_update = _build_language_update(current_text_language)
+            version_text, sample_steps_update, super_sampling_update = _build_version_updates(version)
+            return (
+                language_update,
+                version_text,
+                sample_steps_update,
+                super_sampling_update,
+                t("status_failed_sovits", error=exc),
+            )
 
 
 def _find_paired_sovits_path(gpt_path: str) -> Optional[str]:
@@ -1478,41 +1487,9 @@ def _find_paired_sovits_path(gpt_path: str) -> Optional[str]:
 
 
 def on_change_gpt_weights(gpt_path: str, current_sovits_path: str, current_text_language: str):
-    try:
-        inference_main.change_gpt_weights(gpt_path)
-    except Exception as exc:
-        print(exc)
-        version = inference_main.get_current_model_version()
-        language_update = _build_language_update(current_text_language)
-        version_text, sample_steps_update, super_sampling_update = _build_version_updates(version)
-        return (
-            {"__type__": "update"},
-            language_update,
-            version_text,
-            sample_steps_update,
-            super_sampling_update,
-            t("status_failed_gpt", error=exc),
-        )
-
-    gpt_name = os.path.basename(gpt_path)
-    paired_sovits = _find_paired_sovits_path(gpt_path)
-    if paired_sovits and paired_sovits != current_sovits_path:
+    with timed_stage("webui", "ui change GPT weights"):
         try:
-            version = inference_main.change_sovits_weights(paired_sovits)
-            language_update = _build_language_update(current_text_language)
-            version_text, sample_steps_update, super_sampling_update = _build_version_updates(version)
-            return (
-                {"__type__": "update", "value": paired_sovits},
-                language_update,
-                version_text,
-                sample_steps_update,
-                super_sampling_update,
-                t(
-                    "status_auto_switched_sovits",
-                    gpt=gpt_name,
-                    sovits=os.path.basename(paired_sovits),
-                ),
-            )
+            inference_main.change_gpt_weights(gpt_path)
         except Exception as exc:
             print(exc)
             version = inference_main.get_current_model_version()
@@ -1524,21 +1501,55 @@ def on_change_gpt_weights(gpt_path: str, current_sovits_path: str, current_text_
                 version_text,
                 sample_steps_update,
                 super_sampling_update,
-                t("status_auto_switch_sovits_failed", gpt=gpt_name, error=exc),
+                t("status_failed_gpt", error=exc),
             )
 
-    version = inference_main.get_current_model_version()
-    language_update = _build_language_update(current_text_language)
-    version_text, sample_steps_update, super_sampling_update = _build_version_updates(version)
-    status_key = "status_loaded_gpt" if paired_sovits else "status_no_paired_sovits"
-    return (
-        {"__type__": "update"},
-        language_update,
-        version_text,
-        sample_steps_update,
-        super_sampling_update,
-        t(status_key, name=gpt_name, gpt=gpt_name),
-    )
+        gpt_name = os.path.basename(gpt_path)
+        paired_sovits = _find_paired_sovits_path(gpt_path)
+        if paired_sovits and paired_sovits != current_sovits_path:
+            with timed_stage("webui", "ui auto-switch paired SoVITS"):
+                try:
+                    version = inference_main.change_sovits_weights(paired_sovits)
+                    language_update = _build_language_update(current_text_language)
+                    version_text, sample_steps_update, super_sampling_update = _build_version_updates(version)
+                    return (
+                        {"__type__": "update", "value": paired_sovits},
+                        language_update,
+                        version_text,
+                        sample_steps_update,
+                        super_sampling_update,
+                        t(
+                            "status_auto_switched_sovits",
+                            gpt=gpt_name,
+                            sovits=os.path.basename(paired_sovits),
+                        ),
+                    )
+                except Exception as exc:
+                    print(exc)
+                    version = inference_main.get_current_model_version()
+                    language_update = _build_language_update(current_text_language)
+                    version_text, sample_steps_update, super_sampling_update = _build_version_updates(version)
+                    return (
+                        {"__type__": "update"},
+                        language_update,
+                        version_text,
+                        sample_steps_update,
+                        super_sampling_update,
+                        t("status_auto_switch_sovits_failed", gpt=gpt_name, error=exc),
+                    )
+
+        version = inference_main.get_current_model_version()
+        language_update = _build_language_update(current_text_language)
+        version_text, sample_steps_update, super_sampling_update = _build_version_updates(version)
+        status_key = "status_loaded_gpt" if paired_sovits else "status_no_paired_sovits"
+        return (
+            {"__type__": "update"},
+            language_update,
+            version_text,
+            sample_steps_update,
+            super_sampling_update,
+            t(status_key, name=gpt_name, gpt=gpt_name),
+        )
 
 
 def generate_test_audio(
@@ -1722,39 +1733,47 @@ if __name__ == "__main__":
         default=False,
         help="Randomize the order of reference audios.",
     )
-    args = parser.parse_args()
+    with timed_stage("webui", "parse and normalize startup args"):
+        args = parser.parse_args()
 
-    g_ref_audio_widget_list = []
-    g_ref_lang_widget_list = []
-    g_ref_text_widget_list = []
-    g_test_audio_widget_list = []
-    g_save_widget_list = []
-    g_preview_row_widget_list = []
+        g_ref_audio_widget_list = []
+        g_ref_lang_widget_list = []
+        g_ref_text_widget_list = []
+        g_test_audio_widget_list = []
+        g_save_widget_list = []
+        g_preview_row_widget_list = []
 
-    g_ref_folder = args.folder
-    g_batch = _normalize_batch_size(args.batch)
+        g_ref_folder = args.folder
+        g_batch = _normalize_batch_size(args.batch)
 
-    load_ref_list_file(args.list)
+    with timed_stage("webui", "load reference list"):
+        load_ref_list_file(args.list)
 
     if args.check_duration:
-        remove_noncompliant_audio_from_list()
+        with timed_stage("webui", "filter reference list by duration"):
+            remove_noncompliant_audio_from_list()
 
     if args.random_order:
-        random.shuffle(g_ref_list_all)
-        apply_speaker_filter(g_current_speaker)
+        with timed_stage("webui", "shuffle reference list and refresh speaker filter"):
+            random.shuffle(g_ref_list_all)
+            apply_speaker_filter(g_current_speaker)
 
-    g_SoVITS_names, g_GPT_names = get_weights_names()
+    with timed_stage("webui", "scan model weight directories"):
+        g_SoVITS_names, g_GPT_names = get_weights_names()
 
     if not g_GPT_names or not g_SoVITS_names:
         print(t("no_model_found"))
         raise SystemExit(1)
 
-    current_version = inference_main.initialize(g_GPT_names[0], g_SoVITS_names[0])
-    language_choices = inference_main.get_supported_languages()
-    default_language = language_choices[0] if language_choices else inference_main.get_default_language()
-    version_text = t("version_text", version=current_version)
-    is_v3 = current_version == "v3"
+    with timed_stage("webui", "initial inference pipeline setup"):
+        current_version = inference_main.initialize(g_GPT_names[0], g_SoVITS_names[0])
+        language_choices = inference_main.get_supported_languages()
+        default_language = language_choices[0] if language_choices else inference_main.get_default_language()
+        version_text = t("version_text", version=current_version)
+        is_v3 = current_version == "v3"
 
+    build_app_stage = timed_stage("webui", "build gradio app")
+    build_app_stage.__enter__()
     with gr.Blocks(title="GPT-SoVITS RefAudio Tester WebUI") as app:
         with gr.Column(elem_classes=["app-shell"]):
             mdTitle = gr.Markdown(t("title"), elem_classes=["app-title"])
@@ -2166,6 +2185,8 @@ if __name__ == "__main__":
                 outputs=batch_view_outputs,
             )
 
+    build_app_stage.__exit__(None, None, None)
+    timing_point("webui", f"gradio app ready; launching on port {args.port}")
     app.launch(
         server_name="0.0.0.0",
         inbrowser=True,
